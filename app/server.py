@@ -68,6 +68,38 @@ class EventHub:
 EVENTS = EventHub()
 
 
+class ConflictError(Exception):
+    """A write was based on an entity version that is no longer current."""
+
+
+def can_create_member(actor_role, target_role):
+    """Keep administrator creation and all member management owner-controlled."""
+    if target_role == "owner":
+        return False
+    if actor_role == "owner":
+        return target_role in {"admin", "adult", "child", "display"}
+    if actor_role == "admin":
+        return target_role in {"adult", "child", "display"}
+    return False
+
+
+def can_create_item(actor_role, kind):
+    if kind not in KINDS or actor_role == "display":
+        return False
+    if actor_role == "child":
+        return kind in {"task", "shopping"}
+    return actor_role in PRIVILEGED
+
+
+def valid_mutation_id(value):
+    if not isinstance(value, str) or len(value) != 36:
+        return False
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
 def rate_limited(key):
     now = time.time()
     count, window_start, blocked_until = FAILED_LOGINS.get(key, (0, now, 0))
@@ -115,7 +147,18 @@ def migrate():
     DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(DATA_DIR, 0o700)
     with connect() as con:
-        con.executescript((ROOT / "migrations/001_initial.sql").read_text())
+        con.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+        for migration in sorted((ROOT / "migrations").glob("[0-9][0-9][0-9]_*.sql")):
+            version = int(migration.name.split("_", 1)[0])
+            if con.execute("SELECT 1 FROM schema_migrations WHERE version=?", (version,)).fetchone():
+                continue
+            script = migration.read_text(encoding="utf-8")
+            try:
+                con.executescript("BEGIN IMMEDIATE;\n" + script + f"\nINSERT INTO schema_migrations(version) VALUES({version});\nCOMMIT;")
+            except Exception:
+                if con.in_transaction:
+                    con.rollback()
+                raise
     if DB_PATH.exists():
         os.chmod(DB_PATH, 0o600)
 
@@ -156,6 +199,15 @@ def valid_csrf(con, session_id_hash, token):
         WHERE s.id_hash=? AND (s.csrf_hash=? OR c.token_hash IS NOT NULL)""", (token_hash,session_id_hash,token_hash)).fetchone() is not None
 
 
+def lookup_session(con, session_hash, now=None):
+    """Resolve only unexpired sessions belonging to enabled accounts."""
+    now = now or datetime.now(timezone.utc).isoformat()
+    return con.execute("""SELECT s.id_hash,s.csrf_hash,u.id,u.household_id,u.username,u.display_name,u.role,u.color,
+        h.name household_name,h.timezone
+        FROM sessions s JOIN users u ON u.id=s.user_id JOIN households h ON h.id=u.household_id
+        WHERE s.id_hash=? AND s.expires_at>? AND u.disabled_at IS NULL""", (session_hash, now)).fetchone()
+
+
 def list_items(con, household_id, kind):
     return con.execute("""SELECT i.id,i.kind,i.title,i.details,i.due_at,i.assigned_to,i.completed,i.value,i.version,i.created_at,
         u.display_name assigned_name,u.color assigned_color
@@ -163,14 +215,18 @@ def list_items(con, household_id, kind):
         WHERE i.household_id=? AND i.kind=? ORDER BY i.completed,COALESCE(i.due_at,i.created_at),i.created_at DESC LIMIT 250""", (household_id, kind)).fetchall()
 
 
-def complete_item(con, iid, household_id, actor_id, role):
+def complete_item(con, iid, household_id, actor_id, role, expected_version=None):
     item = con.execute("SELECT * FROM items WHERE id=? AND household_id=?", (iid, household_id)).fetchone()
     if not item:
         return None
+    if item["kind"] not in {"task", "shopping"}:
+        raise PermissionError("This household record does not support completion.")
     if role == "display":
         raise PermissionError("This read-only display cannot change household data.")
     if item["kind"] == "task" and role == "child" and item["assigned_to"] not in (None, actor_id):
         raise PermissionError("You can only complete a task assigned to you.")
+    if expected_version is not None and item["version"] != expected_version:
+        raise ConflictError("This item changed on another device. Refresh and try again.")
     if not item["completed"]:
         con.execute("UPDATE items SET completed=1,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND completed=0", (iid,))
         if item["kind"] == "task" and item["value"] and item["assigned_to"]:
@@ -249,9 +305,7 @@ class Handler(BaseHTTPRequestHandler):
         if not c:
             return None
         con = connect()
-        row = con.execute("""SELECT s.id_hash,s.csrf_hash,u.id,u.household_id,u.username,u.display_name,u.role,u.color,h.name household_name,h.timezone
-                            FROM sessions s JOIN users u ON u.id=s.user_id JOIN households h ON h.id=u.household_id
-                            WHERE s.id_hash=? AND s.expires_at>?""", (digest(c.value), datetime.now(timezone.utc).isoformat())).fetchone()
+        row = lookup_session(con,digest(c.value))
         con.close()
         self.session = row
         return row
@@ -414,8 +468,8 @@ class Handler(BaseHTTPRequestHandler):
         if rate_limited(ip_key) or rate_limited(throttle_key):
             return self.json(429, {"error": "Too many attempts. Wait a few minutes, then try again."})
         with connect() as con:
-            row = con.execute("SELECT id,password_hash FROM users WHERE username=? COLLATE NOCASE LIMIT 1", (username,)).fetchone()
-        if not row or not verify_password(password, row["password_hash"]):
+            row = con.execute("SELECT id,password_hash,disabled_at FROM users WHERE username=? COLLATE NOCASE LIMIT 1", (username,)).fetchone()
+        if not row or row["disabled_at"] or not verify_password(password, row["password_hash"]):
             record_login_failure([(ip_key, 24),(throttle_key, 8)])
             time.sleep(.15)
             return self.json(401, {"error": "Username or password did not match."})
@@ -445,6 +499,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Enter a name and username with at least 3 characters.")
         if role not in {"admin", "adult", "child", "display"}:
             raise ValueError("Choose an available member role.")
+        if not can_create_member(user["role"], role):
+            return self.json(403, {"error": "You are not allowed to add that household role."})
         if role != "child" and (not isinstance(password,str) or len(password) < 12):
             raise ValueError("Choose a password with at least 12 characters.")
         if role == "child" and password and len(password) < 12:
@@ -484,6 +540,8 @@ class Handler(BaseHTTPRequestHandler):
         value = data.get("points", 0)
         if kind not in KINDS or not title:
             raise ValueError("Choose a list and provide a title.")
+        if not can_create_item(user["role"], kind):
+            return self.json(403, {"error": "This account cannot create that household record."})
         if due:
             try:
                 datetime.fromisoformat(due.replace("Z", "+00:00"))
@@ -506,16 +564,39 @@ class Handler(BaseHTTPRequestHandler):
         self.json(201, {"id": iid,"kind":kind,"title":title,"details":details,"due_at":due,"assigned_to":assigned,"completed":0,"value":value,"version":1})
 
     def complete_item(self, user, iid, data):
+        expected = data.get("expectedVersion")
+        mutation_id = data.get("mutationId")
+        if not isinstance(expected, int) or isinstance(expected, bool) or expected < 1:
+            return self.json(422, {"error": "Refresh this item before completing it."})
+        if not valid_mutation_id(mutation_id):
+            return self.json(422, {"error": "This completion request is invalid."})
         con = connect()
         try:
             con.execute("BEGIN IMMEDIATE")
-            updated = complete_item(con,iid,user["household_id"],user["id"],user["role"])
+            receipt = con.execute("SELECT actor_id,operation,entity_id FROM mutation_receipts WHERE household_id=? AND mutation_id=?", (user["household_id"], mutation_id)).fetchone()
+            if receipt:
+                if receipt["actor_id"] != user["id"] or receipt["operation"] != "item.complete" or receipt["entity_id"] != iid:
+                    con.rollback()
+                    return self.json(409, {"error": "This queued change conflicts with another operation."})
+                current = con.execute("SELECT id,kind,title,details,due_at,assigned_to,completed,value,version FROM items WHERE id=? AND household_id=?", (iid,user["household_id"])).fetchone()
+                if not current:
+                    con.rollback()
+                    return self.json(404, {"error": "That household item was not found."})
+                result = dict(current)
+                con.commit()
+                return self.json(200, result)
+            updated = complete_item(con,iid,user["household_id"],user["id"],user["role"],expected_version=expected)
             if not updated:
                 con.rollback()
                 return self.json(404, {"error": "That household item was not found."})
+            result = dict(updated)
+            con.execute("INSERT INTO mutation_receipts(household_id,mutation_id,actor_id,operation,entity_id,result_version) VALUES(?,?,?,'item.complete',?,?)", (user["household_id"],mutation_id,user["id"],iid,result["version"]))
             con.commit()
             EVENTS.publish(user["household_id"], {"kind": updated["kind"], "id": iid, "action": "completed"})
-            return self.json(200, dict(updated))
+            return self.json(200, result)
+        except ConflictError as exc:
+            con.rollback()
+            return self.json(409, {"error": str(exc)})
         except PermissionError as exc:
             con.rollback()
             return self.json(403, {"error": str(exc)})

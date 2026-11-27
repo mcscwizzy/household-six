@@ -1,0 +1,6 @@
+# Approved target runtime dependencies. The current alpha entrypoint remains
+# dependency-free until the FastAPI/SQLAlchemy migration is complete.
+fastapi==0.165.0
+uvicorn==0.54.0
+SQLAlchemy==2.0.58
+alembic==1.20.1

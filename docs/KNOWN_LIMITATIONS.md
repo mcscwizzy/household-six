@@ -1,12 +1,27 @@
 # Known limitations
 
-- This is a runnable foundation, not the complete requested family operating system.
-- Implementation uses Python 3.12 standard library and SQLite instead of Next.js/TypeScript, PostgreSQL/Drizzle and pnpm. The registry was unavailable during this run; no dependency installation or compatible-lockfile generation could be performed.
-- Docker daemon access was denied, so Compose build/start, container health and NAS behavior remain unverified.
-- There is no live multi-device event stream. Each view loads from the server when opened.
-- Offline mode is limited to the static shell, locally cached last view, and best-effort queued task/list completion. Browser storage is not encrypted and sensitive records are not implemented.
-- Calendar is a date label plus event list; no recurrence, timezone/DST policy, drag/drop, calendars, iCalendar, CalDAV or provider adapters exist.
-- The application has no file upload, full-text search, attachments, push, maintenance jobs, worker, AI or MCP service.
-- Icons are SVG-only. Dedicated PNG, Apple Touch, 192/512 and maskable raster exports have not been generated.
-- The auth system is a small local implementation and needs independent security review before exposure beyond a trusted household LAN. The login throttle is per process and in-memory.
-- Physical iPhone, iPad, Synology, certificate trust, push, performance and resource consumption were not tested.
+This repository is still an early runnable alpha, not a complete Skylight alternative.
+
+## Runtime and environment
+
+- The approved target is Python + FastAPI/Uvicorn + SQLite/WAL + SQLAlchemy/Alembic. The checked-in runtime remains the dependency-free `ThreadingHTTPServer` / `sqlite3` service because PyPI package lookup failed in a temporary venv (`No matching distribution found for fastapi`) and npm registry DNS failed (`ENOTFOUND`). The target stack has not been silently replaced or claimed as implemented.
+- Local socket creation is denied by the current environment, so HTTP integration tests cannot run. Docker Compose is missing and `docker info` was denied access to `/var/run/docker.sock`; container restart and image runtime behavior are unverified.
+- Playwright is not installed; browser screenshots, Chromium/WebKit journeys and responsive viewport checks were not run.
+- Git reports `origin/master` as default but cannot write feature refs under the read-only `.git` boundary. No branch, commit, push or PR was created.
+
+## Security and data
+
+- Offline reload is signed out. The browser no longer discovers another member's cache. Household records are not persisted in browser storage. IndexedDB contains only member-keyed task completion intents; the browser store is not encrypted and disconnected revocation cannot be guaranteed.
+- Completion API changes and additive migration 002 are unit-tested at domain/migration level, but the full authenticated HTTP flow is unverified. The role-permission matrix, account disable/reset user flows, parent PIN, and persistent rate limits remain incomplete.
+- The existing application is not independently security-reviewed and should remain behind trusted local HTTPS and restricted LAN ingress.
+- No production data directory was available. The migration test preserved disposable alpha-shaped records; do not treat that as a migration of a household's actual database.
+
+## Incomplete product and operations
+
+- Domain tables, complete CRUD/search/filter/sort, dedicated module interfaces and the full permission matrix are incomplete.
+- Calendar recurrence, exceptions, timezone/DST calculations, reminders, ICS and provider integrations are absent.
+- Routines, habits, reward redemption, allowance, structured recipes, meal calendars and deterministic grocery generation are absent.
+- Pantry history/barcodes, maintenance, vehicles, announcements workflow, devotional, secure documents, emergency information, budgeting, photo/video albums and wall display are absent.
+- Durable SSE replay, background scheduler, notifications, Ollama assistant, AI evaluation, private MCP, uploads and coordinated file/database backup are absent.
+- The manifest uses the existing SVG marks. Requested dedicated PNG, Apple Touch, maskable raster icons, dark-mode/mobile layout validation and iPhone verification have not been completed.
+- Synology setup, trusted local HTTPS, physical iPhone/iPad behavior, resource limits and restore/rollback drill have not been verified.

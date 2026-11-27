@@ -63,10 +63,13 @@ After validating the restored volume, set `DATA_PATH=household-six-restore-data`
 ```sh
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests scripts
+node --check app/static/app.js
 ```
 
 ## Architecture note
 
-The specification prefers Next.js, PostgreSQL, Drizzle, and pnpm. The execution environment cannot resolve `registry.npmjs.org`, so installing or verifying that dependency stack is not possible here. To produce a runnable application without external packages, this initial implementation uses Python 3.12's standard library and SQLite. This is a material engineering deviation: SQLite can serve a small private household, but it is not the specified PostgreSQL deployment and needs further multi-device/load validation before a production recommendation. There is no AI, MCP, worker, Web Push, CalDAV, or provider integration in this alpha.
+The approved continuation architecture is Python 3.12+, FastAPI/Uvicorn, SQLite/WAL, SQLAlchemy/Alembic, modular JavaScript, IndexedDB, household-scoped SSE and optional local Ollama/MCP. The current alpha still uses Python's standard-library HTTP server and `sqlite3`: package lookup failed from this environment, and the FastAPI stack has not been installed or verified. The application therefore remains runnable without dependencies, but the target server and ORM architecture are incomplete. See [ADR 0001](docs/adr/0001-approved-runtime-and-data-store.md) for the decision and exact environment evidence.
 
-See [known limitations](docs/KNOWN_LIMITATIONS.md) and [architecture](docs/ARCHITECTURE.md).
+The approved target's direct runtime and optional MCP package versions are pinned in `requirements.txt` and `requirements-optional.txt`. In a registry-enabled environment, install them inside a virtual environment with `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`. Add optional MCP only when building that feature. A transitive lockfile could not be generated here because PyPI resolution is unavailable; these packages are not required by the current alpha.
+
+See [implementation status](IMPLEMENTATION_STATUS.md), [known limitations](docs/KNOWN_LIMITATIONS.md), [architecture](docs/ARCHITECTURE.md), and [ADR 0001](docs/adr/0001-approved-runtime-and-data-store.md).
