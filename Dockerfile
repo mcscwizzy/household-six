@@ -1,7 +1,9 @@
 FROM python:3.12.8-slim-bookworm
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 APP_PORT=3000 DATA_DIR=/app/data
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 APP_PORT=3000 DATA_DIR=/app/data BIND_ADDRESS=0.0.0.0
 WORKDIR /app
 RUN addgroup --system app && adduser --system --ingroup app app
+COPY requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY app ./app
 COPY migrations ./migrations
 COPY scripts ./scripts

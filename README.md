@@ -8,11 +8,13 @@ This is not a completed substitute for every feature in Skylight Calendar. The i
 
 ## Run locally
 
-Requires Python 3.12 or newer. No Python packages are required.
+Requires Python 3.12 and the locked runtime dependencies.
 
 ```sh
-mkdir -p data
-BIND_ADDRESS=127.0.0.1 APP_URL=http://localhost:3000 APP_PORT=3000 DATA_DIR=./data python3 -m app.server
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --require-hashes -r requirements.lock
+APP_URL=http://localhost:3000 python -m app.server
 ```
 
 Visit <http://localhost:3000>. First-run setup creates the local owner. Use a unique password of at least 12 characters. For LAN use, put the app behind trusted HTTPS; do not expose the plain HTTP service to an untrusted network.
@@ -68,8 +70,8 @@ node --check app/static/app.js
 
 ## Architecture note
 
-The approved continuation architecture is Python 3.12+, FastAPI/Uvicorn, SQLite/WAL, SQLAlchemy/Alembic, modular JavaScript, IndexedDB, household-scoped SSE and optional local Ollama/MCP. The current alpha still uses Python's standard-library HTTP server and `sqlite3`: package lookup failed from this environment, and the FastAPI stack has not been installed or verified. The application therefore remains runnable without dependencies, but the target server and ORM architecture are incomplete. See [ADR 0001](docs/adr/0001-approved-runtime-and-data-store.md) for the decision and exact environment evidence.
+Uvicorn serves the FastAPI application. SQLAlchemy configures local SQLite connections with WAL, and Alembic applies the original additive migrations and tracks new ones. Set `DATA_PATH` to a volume backed by local NAS storage.
 
-The approved target's direct runtime and optional MCP package versions are pinned in `requirements.txt` and `requirements-optional.txt`. In a registry-enabled environment, install them inside a virtual environment with `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`. Add optional MCP only when building that feature. A transitive lockfile could not be generated here because PyPI resolution is unavailable; these packages are not required by the current alpha.
+`requirements.lock` pins and hashes the runtime dependency tree for Python 3.12. `requirements-optional.lock` also includes the MCP SDK. Browser test dependencies are installed with `npm ci`. Set `HOUSEHOLD_SIX_LIVE=1` when running the test suite on a machine that can bind a loopback socket.
 
 See [implementation status](IMPLEMENTATION_STATUS.md), [known limitations](docs/KNOWN_LIMITATIONS.md), [architecture](docs/ARCHITECTURE.md), and [ADR 0001](docs/adr/0001-approved-runtime-and-data-store.md).

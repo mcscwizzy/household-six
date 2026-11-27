@@ -1,4 +1,4 @@
-"""Dependency-free domain and persistence tests (socket use is sandbox-blocked)."""
+"""Domain and persistence regression tests using disposable SQLite databases."""
 import os
 import sqlite3
 import tempfile

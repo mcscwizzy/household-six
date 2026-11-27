@@ -5,7 +5,7 @@
 - Validate request bodies, keep errors generic, and avoid logging identifiers or private content.
 - Do not claim full feature parity or physical NAS/iPhone verification without evidence.
 - The approved continuation architecture is Python + FastAPI/Uvicorn + SQLite/WAL + SQLAlchemy/Alembic, modular JavaScript, IndexedDB, SSE, and optional Ollama/MCP. See `docs/adr/0001-approved-runtime-and-data-store.md`.
-- The current standard-library HTTP service is a temporary environment-driven compatibility baseline because package registry access is unavailable. Do not describe it as FastAPI or add PostgreSQL, Redis, hosted infrastructure, or another parallel architecture.
+- FastAPI/Uvicorn is the web runtime. Keep SQLite on local storage and avoid PostgreSQL, Redis, hosted infrastructure, or another parallel architecture.
 - Preserve alpha household IDs, users, password hashes, timestamps, assignments, and reward ledger records in additive, versioned migrations.
 - Offline storage is default-deny for household data. Only member-keyed, minimal completion intents may be persisted; never infer the active identity from browser storage.
 - Role checks, household scoping, expected versions, and idempotency must be enforced server-side.

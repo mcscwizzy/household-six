@@ -1,13 +1,7 @@
+import { clearLegacyCaches, clearQueued, queuedFor, removeQueued, storeQueued } from './offline.js';
 const $=s=>document.querySelector(s);const app=$('#app');
 const modules={today:['Today','☀️'],calendar:['Calendar','▦'],tasks:['Tasks','✓'],meals:['Meals','♨'],more:['More','⌘'],shopping:['Shopping lists','🛒'],recipes:['Recipes','🍲'],inventory:['Pantry & freezer','🥕'],rewards:['Rewards','⭐'],announcements:['Announcements','📌']};
 let me=null,csrf='',screen='today',members=[],items=[],message='',error='',offline=false,authState='signed-out',live=null,quickOpen=false;
-const OFFLINE_DB='household-six-offline-v1';
-function openOfflineDb(){return new Promise((resolve,reject)=>{const request=indexedDB.open(OFFLINE_DB,1);request.onupgradeneeded=()=>request.result.createObjectStore('mutations',{keyPath:'key'});request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)})}
-function clearLegacyCaches(){for(let i=localStorage.length-1;i>=0;i--){const key=localStorage.key(i);if(key?.startsWith('hs-cache-')||key?.startsWith('hs-queue-'))localStorage.removeItem(key)}}
-async function queuedFor(userId){const db=await openOfflineDb();return new Promise((resolve,reject)=>{const request=db.transaction('mutations').objectStore('mutations').getAll();request.onsuccess=()=>resolve(request.result.filter(x=>x.userId===userId));request.onerror=()=>reject(request.error)})}
-async function storeQueued(operation){const db=await openOfflineDb();return new Promise((resolve,reject)=>{const tx=db.transaction('mutations','readwrite');tx.objectStore('mutations').put(operation);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)})}
-async function removeQueued(key){const db=await openOfflineDb();return new Promise((resolve,reject)=>{const tx=db.transaction('mutations','readwrite');tx.objectStore('mutations').delete(key);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)})}
-async function clearQueued(userId){for(const operation of await queuedFor(userId))await removeQueued(operation.key)}
 async function expireLocalSession(){const expiredId=me?.id;if(expiredId)try{await clearQueued(expiredId)}catch{}clearLegacyCaches();me=null;csrf='';members=[];items=[];offline=false;authState='signed-out';if(live){live.close();live=null}renderAuth(false)}
 clearLegacyCaches();
 function formHasDraft(){if(!screen.startsWith('new:'))return false;const form=$('#item-form');return !!form&&(form.contains(document.activeElement)||Array.from(new FormData(form).values()).some(Boolean))}

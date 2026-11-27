@@ -1,7 +1,7 @@
 services:
   household-six:
     build: .
-    image: household-six:local
+    image: ${HOUSEHOLD_SIX_IMAGE:-household-six:local}
     restart: unless-stopped
     environment:
       APP_PORT: 3000
