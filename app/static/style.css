@@ -62,3 +62,46 @@
 .dashboard-columns { display:grid; grid-template-columns:minmax(0,1fr); gap:10px; }
 .dashboard-shopping { text-align:start; color:var(--ink); justify-content:space-between; }
 @media(min-width:965px) { .dashboard-columns { grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; } }
+
+.chore-card .check { min-width:44px; min-height:44px; }
+.domain-details { margin-top:16px; }
+.domain-details > summary { cursor:pointer; font-weight:650; }
+.domain-details > .list { margin-top:12px; }
+.domain-row { min-width:0; overflow-wrap:anywhere; }
+.domain-row p { margin:6px 0; }
+.domain-row.row { justify-content:space-between; }
+.domain-fieldset { border:1px solid var(--line); border-radius:12px; padding:10px; min-width:0; }
+.domain-fieldset p { margin-top:0; }
+.domain-fieldset label { margin:8px 0; }
+button:disabled { opacity:.65; cursor:default; }
+
+.meal-week { display:grid; gap:10px; grid-template-columns:minmax(0,1fr); }
+.meal-day h3, .meal-slot h4 { margin:0 0 8px; }
+.meal-slot { padding:9px 0; border-top:1px solid var(--line); overflow-wrap:anywhere; }
+.meal-slot h4 { font-size:.85rem; color:var(--muted); }
+.meal-entry { padding-bottom:6px; }
+.meal-entry .text-button, .meal-slot > .text-button { padding:5px 2px; }
+.recipe-scale { max-width:170px; margin-top:10px; }
+.recipe-instructions { white-space:pre-wrap; overflow-wrap:anywhere; }
+.recipe-ingredients { padding-inline-start:22px; }
+.ingredient-fields { display:grid; gap:6px; grid-template-columns:repeat(auto-fit,minmax(min(100%,165px),1fr)); align-items:end; border-bottom:1px solid var(--line); padding-block:10px; }
+@media(min-width:760px) { .meal-week { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media(min-width:1210px) { .meal-week { grid-template-columns:repeat(7,minmax(0,1fr)); gap:6px; } .meal-day { padding:9px; } }
+
+.six-text { white-space:pre-wrap; overflow-wrap:anywhere; }
+.field[hidden] { display:none; }
+
+.inventory-filter { max-width:230px; margin-bottom:12px; }
+.inventory-stock-form { margin-top:10px; align-items:end; }
+.inventory-stock-form .field { max-width:145px; }
+
+.announcement-list { margin-top:12px; }
+.announcement-list h2 { margin:0; font-size:1.12rem; }
+.wall { width:min(100%,1500px); min-height:100dvh; margin:auto; padding:clamp(14px,4vw,56px); }
+.wall-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; margin-bottom:24px; gap:12px; }
+.wall-head h1 { font-size:clamp(1.3rem,3.5vw,3.2rem); color:var(--forest); margin:0; }
+.wall-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,235px),1fr)); gap:12px; }
+.wall-card h2 { font-size:clamp(1rem,1.7vw,1.45rem); margin-top:0; }
+.wall-card ul { list-style:none; padding:0; }
+.wall-card li { padding:8px 0; border-top:1px solid var(--line); overflow-wrap:anywhere; }
+.wall-card p { margin:4px 0; }

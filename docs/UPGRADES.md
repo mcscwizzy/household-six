@@ -9,4 +9,4 @@
 
 Migration 002 adds a `disabled_at` column and mutation-receipt table. The migration test preserves alpha records in a disposable database. This environment had no production household DB to upgrade, so back up before using it. For rollback, stop the app and restore a verified backup into a new empty data directory; do not reverse-edit or overwrite the active copy. Coordinate uploaded files with database backups once file storage exists.
 
-The SQL migration ledger is a compatibility mechanism for the current standard-library alpha, not Alembic. The approved Alembic migration path remains unimplemented until dependency installation is available.
+Alembic adopts the existing numbered SQL ledger and applies later additive migrations inside a SQLite write transaction. The app performs this upgrade at startup.

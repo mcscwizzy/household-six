@@ -21,11 +21,13 @@ export function dashboardView(data, household, canAdd, renderTask, renderBalance
     <div>
       ${section('Today’s appointments', 'calendar', data.appointments, event => calendarEvent(event, false, false, data.date), 'No appointments today.')}
       ${section('Upcoming events', 'calendar', data.upcoming, renderUpcoming, 'No upcoming events this week.')}
-      ${section('Planned meals', 'meals', data.meals, renderTask, 'No meals planned today.')}
+      ${section('Planned meals', 'meals', data.meals, meal => `<article class="card domain-row">
+        <strong>${h(meal.title)}</strong><p class="item-detail">${h([meal.slot, meal.servings ? `${meal.servings} servings` : '', meal.details].filter(Boolean).join(' · '))}</p>
+        </article>`, 'No meals planned today.' )}
     </div>
     <div>
-      ${section('Today’s chores', 'tasks', data.chores, renderTask, 'No chores due today.')}
-      ${data.overdue.length ? section('Overdue chores', 'tasks', data.overdue, renderTask, '') : ''}
+      ${section('Today’s chores', 'tasks', [...data.scheduledChores, ...data.chores], renderTask, 'No chores due today.')}
+      ${data.overdue.length || data.scheduledOverdue.length ? section('Overdue chores', 'tasks', [...data.scheduledOverdue, ...data.overdue], renderTask, '') : ''}
       ${data.unscheduled.length ? section('Chores without a due date', 'tasks', data.unscheduled, renderTask, '') : ''}
       ${section('Shopping summary', 'shopping', data.shopping, list =>
         `<button class="card row dashboard-shopping" data-dashboard-list="${h(list.id)}">${h(list.name)} <strong>${list.open} to get</strong></button>`, 'No items on the shopping lists.')}

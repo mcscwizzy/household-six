@@ -8,16 +8,16 @@ The project does not use PostgreSQL, Redis, Kubernetes, hosted infrastructure or
 
 ## Current implementation
 
-The repository still runs the original dependency-free `app/server.py` service with `sqlite3` and `ThreadingHTTPServer`. Registry access prevented installing or validating the approved runtime packages. This baseline remains in place to preserve the runnable alpha and household data; it is not FastAPI/Uvicorn or SQLAlchemy/Alembic feature parity.
+FastAPI serves the UI and API through Uvicorn. SQLAlchemy provides configured SQLite connections and domain queries. Alembic adopts the existing alpha migration ledger and applies additive migrations in a single SQLite write transaction. The legacy item and authentication queries retain SQLite DB-API behavior on the same engine.
 
-`migrations/001_initial.sql` describes the alpha schema. `migrations/002_session_and_mutation_safety.sql` is additive and adds disabled-account state plus durable mutation receipts. `schema_migrations` records successfully applied numbered SQL files in a transaction. Migration testing checks that alpha records remain present. A real production data directory has not been migrated in this environment.
+The application boundary is a single local SQLite file in WAL mode. Repository migrations preserve alpha IDs, timestamps, memberships, hashes, assignments and ledger entries. The upgrade tests run on synthetic alpha records.
 
 ## Data and trust boundaries
 
 - SQLite is authoritative. Every query and mutation must be scoped by the authenticated household on the server.
-- The browser is untrusted. Offline storage holds no household records. IndexedDB may hold only a member-keyed task completion intent with expected version, unique mutation ID and bounded retry metadata.
+- The browser is untrusted. Offline storage holds no household records. IndexedDB may hold only a member-keyed completion intent with expected version, unique mutation ID and bounded retry metadata.
 - Offline intents are never loaded before the same member authenticates online. Offline reload is signed out. Browser storage is not encrypted and client state cannot guarantee revocation while disconnected.
-- HTTP, UI, AI, MCP and jobs must call the same application services once the modular service layer is established.
+- HTTP, UI, AI, MCP and jobs must call the same application services for equivalent authorization and business rules.
 - SSE is currently process-local and has no durable replay. Keep deployment single-process until shared event delivery is implemented.
 
 ## Current request flow
@@ -26,7 +26,7 @@ The repository still runs the original dependency-free `app/server.py` service w
 sequenceDiagram
   participant M as Household member
   participant B as Browser PWA
-  participant S as Current Python service
+  participant S as FastAPI
   participant D as SQLite WAL
   M->>B: Complete an eligible task
   B->>S: POST with session, CSRF, expected version and mutation ID
@@ -36,6 +36,6 @@ sequenceDiagram
   B-->>M: Confirm, revert or reconcile state
 ```
 
-## Modularization target
+## Modules
 
-Split the current monolith into `app/config.py`, `app/database/`, `app/auth/`, `app/api/`, `app/models/`, `app/schemas/`, `app/services/`, `app/integrations/`, `app/ai/`, `app/mcp/`, `app/jobs/`, and `app/static/{components,modules,styles,icons}`. This layout is not yet implemented; avoid claiming otherwise. Preserve the current user IDs, password hashes, timestamps, assignments and points ledger during the adapter migration.
+`app/server.py` owns HTTP routing, response security and the original session API. Separate Python modules own calendar, chores, rewards, meals, shopping, inventory, announcements, assistant jobs and MCP. Browser modules in `app/static` render those domains. `app/database.py` configures SQLite, and `app/db_migrations` contains the Alembic revisions.

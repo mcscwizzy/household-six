@@ -18,13 +18,14 @@ class RuntimeTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
+        self.database_path = Path(directory.name, "household.sqlite3")
         self.base = os.environ.get("HOUSEHOLD_SIX_TEST_URL", "http://127.0.0.1:18763")
         log = tempfile.TemporaryFile()
         self.addCleanup(log.close)
         process = subprocess.Popen(
             [sys.executable, "-m", "app.server"],
             env={**os.environ, "BIND_ADDRESS": "127.0.0.1", "APP_PORT": self.base.rsplit(":", 1)[1],
-                 "DATA_DIR": directory.name, "APP_URL": self.base},
+                 "DATA_DIR": directory.name, "APP_URL": self.base, "HOUSEHOLD_TIMEZONE": "America/Chicago"},
             stdout=log, stderr=log,
         )
 
@@ -193,6 +194,15 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(mutate(series_url, {"expectedVersion": 2}, "DELETE")[0], 204)
         self.assertEqual(mutate(path + "/import", {"ics": exported})[0], 201)
         self.assertEqual(mutate(path + "/import", {"ics": exported})[1]["created"], 0)
+        utc_series = "\r\n".join(["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Verification//EN",
+                                    "BEGIN:VEVENT", "UID:synthetic-utc-series", "SUMMARY:UTC class",
+                                    "DTSTART:20260301T150000Z", "DTEND:20260301T160000Z",
+                                    "RRULE:FREQ=WEEKLY;COUNT=3", "END:VEVENT", "END:VCALENDAR", ""])
+        self.assertEqual(mutate(path + "/import", {"ics": utc_series})[0], 201)
+        _, expanded = self.request(owner, url)
+        self.assertEqual([item["occurrenceStart"] for item in expanded["events"] if item["title"] == "UTC class"],
+                         ["2026-03-01T09:00:00", "2026-03-08T10:00:00", "2026-03-15T10:00:00"])
+
 
     def test_today_uses_household_date_and_separates_old_records(self):
         from datetime import datetime, timedelta, timezone
@@ -222,3 +232,228 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual([item["title"] for item in dashboard["overdue"]], ["Overdue"])
         self.assertEqual([item["title"] for item in dashboard["meals"]], ["Tonight"])
         self.assertEqual([item["title"] for item in dashboard["upcoming"]], ["Scheduled tomorrow"])
+
+    def test_recurring_chore_approval_and_reward_redemption(self):
+        owner, child = self.client(), self.client()
+        password = "A disposable passphrase"
+        owner_auth = self.setup_owner(owner)
+        _, member = self.request(owner, "/api/members", {
+            "csrf": owner_auth["csrf"], "displayName": "Child", "username": "child", "role": "child", "password": password,
+        })
+        _, child_auth = self.request(child, "/api/login", {"username": "child", "password": password})
+
+        def write(client, auth, path, fields, mutation_id=None):
+            return self.request(client, path, {**fields, "csrf": auth["csrf"], "mutationId": mutation_id or str(uuid.uuid4())})
+
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        today = datetime.now(ZoneInfo(owner_auth["user"]["timezone"])).date()
+        date = today.isoformat()
+        tomorrow = (today + timedelta(days=1)).isoformat()
+        status, chore = write(owner, owner_auth, "/api/chores", {
+            "title": "Brush teeth", "start": date, "repeat": "daily", "routine": "bedtime",
+            "assignees": [member["id"]], "points": 7, "approvalRequired": True,
+        })
+        self.assertEqual(status, 201)
+        _, board = self.request(child, f"/api/chores?date={tomorrow}")
+        self.assertEqual(board["scheduled"][0]["routine"], "bedtime")
+        self.assertEqual(board["scheduled"][0]["status"], "open")
+        finish_path = f"/api/chores/{chore['id']}/complete"
+        completion = {"date": date, "assignedTo": member["id"], "expectedVersion": 1}
+        request_id = str(uuid.uuid4())
+        status, done = write(child, child_auth, finish_path, completion, request_id)
+        self.assertEqual((status, done["status"]), (200, "pending"))
+        self.assertEqual(write(child, child_auth, finish_path, completion, request_id)[1]["id"], done["id"])
+        self.assertEqual(self.request(child, "/api/summary")[1]["members"][1]["points"], 0)
+        approval = f"/api/chores/occurrences/{done['id']}/review"
+        self.assertEqual(write(child, child_auth, approval, {"approved": True, "expectedVersion": done["version"]})[0], 403)
+        self.assertEqual(write(owner, owner_auth, approval, {"approved": True, "expectedVersion": done["version"]})[1]["status"], "approved")
+        self.assertEqual(write(owner, owner_auth, approval, {"approved": True, "expectedVersion": done["version"]})[0], 409)
+        status, reward = write(owner, owner_auth, "/api/rewards", {"title": "Choose a movie", "points": 5})
+        self.assertEqual(status, 201)
+        status, request = write(child, child_auth, f"/api/rewards/{reward['id']}/request", {"expectedVersion": 1})
+        self.assertEqual((status, request["status"]), (201, "pending"))
+        self.assertEqual(write(child, child_auth, f"/api/rewards/{reward['id']}/request", {"expectedVersion": 1})[0], 409)
+        review_path = f"/api/rewards/redemptions/{request['id']}/review"
+        self.assertEqual(write(owner, owner_auth, review_path, {"approved": True, "expectedVersion": 1})[1]["status"], "approved")
+        _, store = self.request(child, "/api/rewards")
+        self.assertEqual(store["balance"], 2)
+        self.assertEqual(store["requests"][0]["title"], "Choose a movie")
+
+    def test_meal_plan_scales_and_synchronizes_groceries(self):
+        owner = self.client()
+        auth = self.setup_owner(owner)
+
+        def write(path, fields, method="POST"):
+            return self.request(owner, path, {**fields, "csrf": auth["csrf"], "mutationId": str(uuid.uuid4())},
+                                method=method)
+
+        status, recipe = write("/api/recipes", {
+            "title": "Breakfast oats", "servings": 2, "instructions": "Cook oats. Add milk.",
+            "ingredients": [{"name": "Oats", "quantity": "1.5", "unit": "cups", "category": "Pantry"}],
+        })
+        self.assertEqual(status, 201)
+        fields = {"date": "2026-11-23", "slot": "breakfast", "recipeId": recipe["id"], "servings": 4}
+        status, meal = write("/api/meals", fields)
+        self.assertEqual(status, 201)
+        _, plan = self.request(owner, "/api/meals?date=2026-11-25")
+        self.assertEqual((plan["weekStart"], plan["meals"][0]["title"], plan["meals"][0]["servings"]),
+                         ("2026-11-23", "Breakfast oats", 4))
+        sync = {"date": "2026-11-23", "listId": "default"}
+        self.assertEqual(write("/api/meals/groceries", sync)[1]["created"], 1)
+        self.assertEqual(write("/api/meals/groceries", sync)[1]["created"], 0)
+        _, groceries = self.request(owner, "/api/shopping")
+        self.assertEqual([item["quantity"] for item in groceries["items"]], ["3 cups"])
+        self.assertEqual(write(f"/api/meals/{meal['id']}", {**fields, "servings": 2, "expectedVersion": 1}, "PUT")[0], 200)
+        self.assertEqual(write("/api/meals/groceries", sync)[1]["updated"], 1)
+        _, groceries = self.request(owner, "/api/shopping")
+        self.assertEqual([item["quantity"] for item in groceries["items"]], ["1.5 cups"])
+        self.assertEqual(write(f"/api/meals/{meal['id']}", {"expectedVersion": 2}, "DELETE")[0], 204)
+        self.assertEqual(write("/api/meals/groceries", sync)[1]["removed"], 1)
+        self.assertEqual(self.request(owner, "/api/shopping")[1]["items"], [])
+
+    @unittest.skipUnless(os.environ.get("HOUSEHOLD_SIX_AI_LIVE") == "1", "requires a configured local Ollama model")
+    def test_six_real_model_and_explicit_confirmation(self):
+        owner = self.client()
+        auth = self.setup_owner(owner)
+
+        def write(path, fields, request_id=None):
+            return self.request(owner, path, {**fields, "csrf": auth["csrf"], "mutationId": request_id or str(uuid.uuid4())})
+
+        cases = [
+            ("grocery", "Add 2 bags of rolled oats to groceries.", "proposal"),
+            ("calendar", "Schedule Library visit tomorrow from 09:00 to 10:00.", "proposal"),
+            ("chore", "Every morning starting tomorrow, feed the cat.", "proposal"),
+            ("question", "How many items are on the shopping list?", "result"),
+            ("recipe", "Banana oats. Serves 2. Ingredients: 1 cup oats; 2 bananas. Bring to a simmer and serve.", "proposal"),
+            ("document", "Library reminder: book club meets on the first Friday. Bring your library card.", "result"),
+        ]
+        for kind, prompt, expected in cases:
+            with self.subTest(kind=kind):
+                status, created = write("/api/six", {"kind": kind, "text": prompt})
+                self.assertEqual(status, 202)
+                for _ in range(150):
+                    _, result = self.request(owner, "/api/six")
+                    job = next(item for item in result["jobs"] if item["id"] == created["id"])
+                    if job["state"] not in {"queued", "running"}:
+                        break
+                    time.sleep(.5)
+                self.assertEqual(job["state"], expected, job["result"])
+                if kind == "grocery":
+                    self.assertEqual(self.request(owner, "/api/shopping")[1]["items"], [])
+                    proposal_id = f"/api/six/{job['id']}/decision"
+                    decision = {"confirm": True, "expectedVersion": job["version"]}
+                    request_id = str(uuid.uuid4())
+                    self.assertEqual(write(proposal_id, decision, request_id)[1]["state"], "applied")
+                    self.assertEqual(write(proposal_id, decision, request_id)[1]["state"], "applied")
+                    self.assertEqual(len(self.request(owner, "/api/shopping")[1]["items"]), 1)
+                    self.assertIn("oats", self.request(owner, "/api/shopping")[1]["items"][0]["title"].lower())
+                if kind == "question":
+                    self.assertEqual(job["result"]["topic"], "shopping")
+                    self.assertIn("1 to get", job["result"]["lines"][0])
+
+    def test_inventory_preserves_stock_and_rejects_stale_changes(self):
+        owner = self.client()
+        auth = self.setup_owner(owner)
+
+        def write(path, fields, method="POST", request_id=None):
+            return self.request(owner, path, {**fields, "csrf": auth["csrf"], "mutationId": request_id or str(uuid.uuid4())},
+                                method=method)
+
+        status, item = write("/api/inventory", {
+            "title": "Yogurt", "location": "refrigerator", "quantity": "1.5",
+            "unit": "containers", "threshold": "1", "expiresOn": "2027-04-30",
+        })
+        self.assertEqual(status, 201)
+        destination = f"/api/inventory/{item['id']}/stock"
+        operation = str(uuid.uuid4())
+        fields = {"direction": "use", "amount": "0.75", "expectedVersion": 1}
+        self.assertEqual(write(destination, fields, request_id=operation)[1]["quantity"], "0.75")
+        self.assertEqual(write(destination, fields, request_id=operation)[1]["quantity"], "0.75")
+        self.assertEqual(write(destination, fields)[0], 409)
+        self.assertEqual(write(destination, {"direction": "use", "amount": "1", "expectedVersion": 2})[0], 409)
+        _, inventory = self.request(owner, "/api/inventory?location=refrigerator")
+        self.assertTrue(inventory["items"][0]["low"])
+        self.assertEqual(inventory["history"][0]["amount"], "0.75")
+        self.assertFalse(self.request(owner, "/api/inventory?location=freezer")[1]["items"])
+
+    def test_cross_household_api_cannot_read_or_modify_identified_records(self):
+        import sqlite3
+
+        from app.server import pw_hash
+
+        first, second = self.client(), self.client()
+        auth = self.setup_owner(first)
+        password = "A separate synthetic password"
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("INSERT INTO households(id,name) VALUES('separate','Separate')")
+            connection.execute("""INSERT INTO users(id,household_id,username,password_hash,display_name,role)
+                VALUES('second','separate','second',?,'Second','owner')""", (pw_hash(password),))
+        _, second_login = self.request(second, "/api/login", {"username": "second", "password": password})
+        fields = {"csrf": auth["csrf"], "mutationId": str(uuid.uuid4()), "name": "Private list"}
+        _, first_list = self.request(first, "/api/shopping/lists", fields)
+        status, _ = self.request(second, "/api/shopping?list=" + first_list["id"])
+        self.assertEqual(status, 404)
+        status, _ = self.request(second, f"/api/shopping/lists/{first_list['id']}/items", {
+            "csrf": second_login["csrf"], "mutationId": str(uuid.uuid4()), "title": "Foreign change",
+        })
+        self.assertEqual(status, 404)
+        replay = {"csrf": auth["csrf"], "mutationId": str(uuid.uuid4()), "kind": "task", "title": "Private task"}
+        status, original = self.request(first, "/api/items", replay)
+        self.assertEqual(status, 201)
+        self.assertEqual(self.request(first, "/api/items", replay)[1]["id"], original["id"])
+        self.assertEqual(self.request(first, "/api/items", {**replay, "title": "Changed content"})[0], 409)
+        self.assertEqual(self.request(second, "/api/items?kind=task")[1]["items"], [])
+
+    def test_announcements_expire_and_acknowledge_per_member(self):
+        owner, child = self.client(), self.client()
+        auth = self.setup_owner(owner)
+        _, member = self.request(owner, "/api/members", {
+            "csrf": auth["csrf"], "displayName": "Child", "username": "child", "role": "child",
+            "password": "A disposable passphrase",
+        })
+        self.assertEqual(member["role"], "child")
+        _, child_auth = self.request(child, "/api/login", {"username": "child", "password": "A disposable passphrase"})
+
+        def write(client, csrf, path, fields):
+            return self.request(client, path, {**fields, "csrf": csrf, "mutationId": str(uuid.uuid4())})
+
+        fields = {"title": "Family meeting", "details": "Saturday at breakfast", "pinned": True, "expiresOn": "2100-12-01"}
+        self.assertEqual(write(child, child_auth["csrf"], "/api/announcements", fields)[0], 403)
+        status, note = write(owner, auth["csrf"], "/api/announcements", fields)
+        self.assertEqual(status, 201)
+        self.assertEqual(write(owner, auth["csrf"], "/api/announcements",{**fields, "expiresOn": "2000-01-02"})[0], 201)
+        _, result = self.request(child, "/api/announcements")
+        self.assertEqual([item["id"] for item in result["items"]], [note["id"]])
+        status, ack = write(child, child_auth["csrf"], f"/api/announcements/{note['id']}/ack", {"expectedVersion": 1})
+        self.assertEqual((status, ack["acknowledged"]), (200, True))
+        self.assertFalse(self.request(owner, "/api/announcements")[1]["items"][0]["acknowledged"])
+        self.assertEqual(self.request(owner, "/api/announcements")[1]["items"][0]["ackCount"], 1)
+
+    @unittest.skipUnless(os.environ.get("HOUSEHOLD_SIX_AI_LIVE") == "1", "requires a configured local Ollama model")
+    def test_six_real_attachment_extraction(self):
+        import base64
+
+        owner = self.client()
+        auth = self.setup_owner(owner)
+        directory = Path(__file__).parent / "fixtures" / "six"
+        for file, mime, expected in [
+            ("note.png", "image/png", "library"),
+            ("note.pdf", "application/pdf", "library"),
+        ]:
+            with self.subTest(file=file):
+                status, created = self.request(owner, "/api/six", {
+                    "kind": "document", "text": "Extract the printed text in this note.", "fileType": mime,
+                    "attachment": base64.b64encode((directory / file).read_bytes()).decode(),
+                    "csrf": auth["csrf"], "mutationId": str(uuid.uuid4()),
+                })
+                self.assertEqual(status, 202)
+                for _ in range(150):
+                    _, result = self.request(owner, "/api/six")
+                    job = next(item for item in result["jobs"] if item["id"] == created["id"])
+                    if job["state"] not in {"queued", "running"}:
+                        break
+                    time.sleep(.5)
+                self.assertEqual(job["state"], "result", job["result"])
+                self.assertIn(expected, job["result"]["extracted_text"].lower())

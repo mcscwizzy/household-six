@@ -1,9 +1,9 @@
-const CACHE = 'household-six-shell-v6';
-const SHELL = ['/', '/style.css', '/app.js', '/offline.js', '/shopping.js', '/html.js', '/calendar.js', '/dashboard.js', '/dates.js', '/manifest.webmanifest', '/logo.svg', '/icon.svg',
+const CACHE = 'household-six-shell-v17';
+const SHELL = ['/', '/style.css', '/app.js', '/offline.js', '/shopping.js', '/html.js', '/calendar.js', '/chores.js', '/rewards.js', '/meals.js', '/six.js', '/inventory.js', '/announcements.js', '/dashboard.js', '/dates.js', '/manifest.webmanifest', '/logo.svg', '/icon.svg',
   '/apple-touch-icon.png', '/pwa-192.png', '/pwa-512.png', '/pwa-maskable-512.png'];
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL.map(path => new Request(path, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', event => {
   event.waitUntil(caches.keys().then(keys => Promise.all(keys

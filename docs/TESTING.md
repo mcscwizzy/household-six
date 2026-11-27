@@ -1,24 +1,22 @@
 # Testing
 
-## Locally available checks
+Install the runtime dependencies in a Python 3.12 virtual environment before running tests.
 
 ```sh
-python3 -m unittest discover -s tests -v
-python3 -m compileall -q app tests scripts
-node --check app/static/app.js
+python -m pip install --require-hashes -r requirements.lock
+HOUSEHOLD_SIX_LIVE=1 python -m unittest discover -s tests -v
+python -m compileall -q app tests scripts
+npm ci
+npx playwright install --with-deps chromium webkit
 ```
 
-The most recent executed unit run passed 16 tests: password hashing, multi-tab CSRF, household-scoped item queries, child/display restrictions, exactly-once point awards, household SSE fanout, preservation during migration from an unversioned v1 schema, owner-only administrator creation, child/display item-create restrictions, stale entity version conflict, mutation receipt uniqueness, canonical UUID validation, expired/disabled session rejection, rejection of calendar event completion, and backup/restore. Python compilation and JavaScript syntax checks also passed.
+Run the browser journeys against a fresh data directory and a loopback HTTP instance.
 
-Baseline before changes: 8 tests passed. Current total: 16 tests passed.
+```sh
+DATA_DIR="$(mktemp -d)" APP_URL=http://127.0.0.1:3000 python -m app.server
+npm run test:e2e
+```
 
-## Environment blockers
+Browser tests create synthetic data and capture PNGs in `artifacts/e2e`. They exercise household screens with Chromium and WebKit, including 320, 375, 390, 430, 768, 1024 and 1440 px viewports. Run them on a disposable application instance.
 
-- Creating a local socket fails with `PermissionError: [Errno 1] Operation not permitted`; authenticated HTTP integration cannot run in this workspace.
-- Docker is installed, but `docker compose` reports that the Compose plugin is unavailable. Compose build, health, restart and persisted-data tests have not run.
-- Playwright is not installed and npm registry DNS fails. Chromium and WebKit end-to-end tests and screenshots have not run.
-- PyPI package resolution from a new temporary Python virtual environment returns `No matching distribution found for fastapi`; FastAPI/Uvicorn/SQLAlchemy/Alembic/MCP installation and app migration tests against those packages have not run.
-
-The repository now defines CI jobs for actual Compose authenticated HTTP operations and persisted state across restart, plus Playwright Chromium/WebKit login/task/offline flows, responsive widths and light/dark screenshot artifacts. They are authored but have not run; do not report them as passing.
-
-Do not mark any blocked check as passed. CI should run the Python checks, start Compose, wait for `/api/health`, create a disposable household, exercise authenticated item operations, restart the app and confirm persistence. Add Playwright Chromium and WebKit, dependency audit and security scanning in a registry-enabled runner before deployment.
+The Compose smoke script checks the existing session and household data across a restart. Use a disposable Compose project name, named volumes, a loopback port and a unique `CI_RUN_ID`. For local AI and MCP tests see [the AI evaluation](AI_EVALUATION.md) and [the private MCP guide](MCP.md).

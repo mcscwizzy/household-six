@@ -2,18 +2,19 @@
 from datetime import date, datetime, time, timedelta, timezone
 import json
 import uuid
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dateutil.rrule import rrulestr
 from icalendar import Calendar, Event, Timezone
 
+from app.dates import local_day
 from app.mutations import DomainError, Mutation, clean, expected_version, row, statement
 
 ONE_DAY = timedelta(days=1)
 REPEAT = {"daily": "DAILY", "weekly": "WEEKLY", "monthly": "MONTHLY", "yearly": "YEARLY"}
 RULE_FIELDS = {"FREQ", "INTERVAL", "UNTIL", "COUNT", "BYDAY", "BYMONTHDAY", "BYMONTH", "BYSETPOS", "WKST"}
 EVENTS_SQL = """SELECT i.id,i.title,i.details,i.version,i.assigned_to,i.due_at,u.display_name,u.color,
-    c.starts_at,c.ends_at,c.all_day,c.recurrence_rule,c.exceptions,c.ics_uid
+    c.starts_at,c.ends_at,c.all_day,c.recurrence_rule,c.exceptions,c.ics_uid,c.event_timezone
     FROM items i LEFT JOIN calendar_events c ON c.item_id=i.id AND c.household_id=i.household_id
     LEFT JOIN users u ON u.id=i.assigned_to AND u.household_id=i.household_id AND u.disabled_at IS NULL
     WHERE i.household_id=:h AND i.kind='event' AND i.deleted_at IS NULL"""
@@ -73,6 +74,11 @@ def validated_rule(rule, start):
 
 
 def validate(connection, household, data, zone):
+    event_timezone = data.get("timezone") or zone.key
+    try:
+        event_zone = ZoneInfo(event_timezone)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        raise DomainError(422, "Choose a supported event timezone.") from None
     title = clean(data.get("title"), 120, required=True)
     details = clean(data.get("details", ""), 1000)
     all_day = data.get("allDay", False)
@@ -81,7 +87,7 @@ def validate(connection, household, data, zone):
     if all_day:
         start, end = parse_date(data.get("start")), parse_date(data.get("end"))
     else:
-        start, end = (local_datetime(data.get(field), zone) for field in ("start", "end"))
+        start, end = (local_datetime(data.get(field), event_zone) for field in ("start", "end"))
     duration = end - start
     if not timedelta(0) < duration <= timedelta(days=366):
         raise DomainError(422, "The event must end after it starts and span at most one year.")
@@ -100,7 +106,7 @@ def validate(connection, household, data, zone):
     if not all_day:
         start, end = (point.replace(tzinfo=None) for point in (start, end))
     return {"title": title, "details": details, "assigned": assigned_to, "starts": start.isoformat(),
-            "ends": end.isoformat(), "all_day": int(all_day), "rule": rule, "exceptions": json.dumps(exceptions)}
+            "ends": end.isoformat(), "all_day": int(all_day), "rule": rule, "exceptions": json.dumps(exceptions), "event_timezone": event_zone.key}
 
 
 def event_data(record, zone):
@@ -110,8 +116,10 @@ def event_data(record, zone):
         # Alpha records can hold dates, local datetimes, or explicit offsets.
         try:
             legacy = record["due_at"]
-            if len(legacy) == 10:
-                first = parse_date(legacy)
+            if "T" not in legacy and " " not in legacy:
+                first = local_day(legacy, zone)
+                if first is None:
+                    raise ValueError
                 last, all_day = first + ONE_DAY, True
             else:
                 first = datetime.fromisoformat(legacy)
@@ -126,6 +134,7 @@ def event_data(record, zone):
         "assignedTo": record["assigned_to"], "memberName": record["display_name"], "memberColor": record["color"],
         "start": start, "end": end, "allDay": all_day, "rule": record["recurrence_rule"],
         "exceptions": json.loads(record["exceptions"] or "[]"),
+        "timezone": record["event_timezone"] or zone.key,
     }
 
 
@@ -136,9 +145,10 @@ def occurrence_points(event, zone, start_window, end_window):
         ends = datetime.combine(date.fromisoformat(event["end"]), time.min)
         low, high = (datetime.combine(d, time.min) for d in (start_window, end_window))
     else:
-        starts = attach_zone(datetime.fromisoformat(event["start"]), zone)
-        ends = attach_zone(datetime.fromisoformat(event["end"]), zone)
-        low, high = (datetime.combine(d, time.min, zone) for d in (start_window, end_window))
+        event_zone = ZoneInfo(event["timezone"])
+        starts = attach_zone(datetime.fromisoformat(event["start"]), event_zone)
+        ends = attach_zone(datetime.fromisoformat(event["end"]), event_zone)
+        low, high = (datetime.combine(d, time.min, zone).astimezone(event_zone) for d in (start_window, end_window))
     duration = ends - starts
     if event["rule"]:
         occurrences = rrulestr(event["rule"], dtstart=starts).xafter(low - duration, count=440, inc=True)
@@ -152,16 +162,17 @@ def occurrence_points(event, zone, start_window, end_window):
         if end <= low or start.date().isoformat() in excluded:
             continue
         if all_day:
-            yield start.date().isoformat(), end.date().isoformat(), None
+            yield start.date().isoformat(), end.date().isoformat(), None, start.date().isoformat()
         else:
             local_start, local_end = (point.replace(tzinfo=None) for point in (start, end))
             try:
-                attach_zone(local_start, zone)
-                attach_zone(local_end, zone)
+                attach_zone(local_start, event_zone)
+                attach_zone(local_end, event_zone)
             except DomainError:
                 continue
-            iso = start.isoformat()
-            yield local_start.isoformat(), local_end.isoformat(), iso[-6:]
+            actual_start, actual_end = start.astimezone(zone), end.astimezone(zone)
+            yield (actual_start.replace(tzinfo=None).isoformat(), actual_end.replace(tzinfo=None).isoformat(),
+                   actual_start.isoformat()[-6:], start.date().isoformat())
 
 
 def load(database, user, start_value, end_value, member=None):
@@ -181,8 +192,8 @@ def load(database, user, start_value, end_value, member=None):
                 unscheduled.append(event)
                 continue
             try:
-                for begins, ends, offset in occurrence_points(event, zone, start, end):
-                    result.append({**event, "occurrenceStart": begins, "occurrenceEnd": ends, "utcOffset": offset})
+                for begins, ends, offset, source_day in occurrence_points(event, zone, start, end):
+                    result.append({**event, "occurrenceStart": begins, "occurrenceEnd": ends, "utcOffset": offset, "occurrenceDate": source_day})
                     if len(result) > 5000:
                         raise DomainError(422, "Select fewer calendar days to view these events.")
             except DomainError:
@@ -202,10 +213,10 @@ def save_event(connection, user, entity, fields, version, uid=None):
         statement(connection, """UPDATE items SET title=:title,details=:details,due_at=:starts,assigned_to=:assigned,
             version=:v,updated_at=CURRENT_TIMESTAMP WHERE household_id=:h AND id=:id AND kind='event'""", **params)
     statement(connection, """INSERT INTO calendar_events
-        (item_id,household_id,starts_at,ends_at,all_day,recurrence_rule,exceptions,ics_uid)
-        VALUES(:id,:h,:starts,:ends,:all_day,:rule,:exceptions,:uid)
+        (item_id,household_id,starts_at,ends_at,all_day,recurrence_rule,exceptions,ics_uid,event_timezone)
+        VALUES(:id,:h,:starts,:ends,:all_day,:rule,:exceptions,:uid,:event_timezone)
         ON CONFLICT(item_id) DO UPDATE SET starts_at=:starts,ends_at=:ends,all_day=:all_day,
-        recurrence_rule=:rule,exceptions=:exceptions WHERE household_id=:h""", **params)
+        recurrence_rule=:rule,exceptions=:exceptions,event_timezone=:event_timezone WHERE household_id=:h""", **params)
 
 
 def write(database, user, operation, target, data):
@@ -280,12 +291,24 @@ def read_ics(raw, zone):
             if (not isinstance(end, datetime)) != all_day:
                 raise ValueError
 
+            rule = part.get("RRULE")
+            source_zone = zone
+            if not all_day and start.tzinfo:
+                source = getattr(start.tzinfo, "key", None) or (str(start.tzinfo) if start.tzinfo == timezone.utc else None)
+                if source:
+                    try:
+                        source_zone = ZoneInfo(source)
+                    except ZoneInfoNotFoundError:
+                        if rule:
+                            raise DomainError(422, "Recurring imports must use a supported timezone.") from None
+                elif rule:
+                    raise DomainError(422, "Recurring imports must use a supported timezone.")
+
             def local(point):
                 if isinstance(point, datetime) and point.tzinfo:
-                    return point.astimezone(zone).replace(tzinfo=None)
+                    return point.astimezone(source_zone).replace(tzinfo=None)
                 return point
 
-            rule = part.get("RRULE")
             exceptions = part.get("EXDATE", [])
             if not isinstance(exceptions, list):
                 exceptions = [exceptions]
@@ -298,6 +321,7 @@ def read_ics(raw, zone):
             records.append((uid, {
                 "title": str(part.get("SUMMARY", "Untitled event")), "details": str(part.get("DESCRIPTION", "")),
                 "allDay": all_day, "start": local(start).isoformat(), "end": local(end).isoformat(),
+                "timezone": source_zone.key,
                 "rule": rule.to_ical().decode("ascii") if rule else None, "exceptions": excluded,
             }))
         return records
@@ -313,7 +337,8 @@ def export_ics(database, user):
     calendar.add("prodid", "-//Household Six//Calendar//EN")
     calendar.add("version", "2.0")
     # Include the household timezone so LAN and standalone calendar clients can resolve wall times.
-    calendar.add_component(Timezone.from_tzinfo(zone, first_date=date(1900, 1, 1), last_date=date(2101, 1, 1)))
+    added_zones = {"UTC"}
+    components = []
     with database.connect() as connection:
         for record in statement(connection, EVENTS_SQL, h=user["household_id"]).mappings():
             event = event_data(record, zone)
@@ -327,7 +352,13 @@ def export_ics(database, user):
             if event["allDay"]:
                 start, end = (date.fromisoformat(event[field]) for field in ("start", "end"))
             else:
-                start, end = (datetime.fromisoformat(event[field]).replace(tzinfo=zone) for field in ("start", "end"))
+                source = ZoneInfo(event["timezone"])
+                if source.key not in added_zones:
+                    calendar.add_component(Timezone.from_tzinfo(
+                        source, first_date=date(1900, 1, 1), last_date=date(2101, 1, 1),
+                    ))
+                    added_zones.add(source.key)
+                start, end = (datetime.fromisoformat(event[field]).replace(tzinfo=source) for field in ("start", "end"))
             component.add("dtstart", start)
             component.add("dtend", end)
             if event["rule"]:
@@ -336,5 +367,7 @@ def export_ics(database, user):
                     day = date.fromisoformat(value)
                     exception = datetime.combine(day, start.timetz()) if isinstance(start, datetime) else day
                     component.add("exdate", exception)
-            calendar.add_component(component)
+            components.append(component)
+    for component in components:
+        calendar.add_component(component)
     return calendar.to_ical()

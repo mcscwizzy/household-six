@@ -43,6 +43,15 @@ def load(database, user, list_id):
                 "items": [dict(item) for item in result]}
 
 
+def add_item(connection, user, list_id, item_id, fields):
+    household = user["household_id"]
+    find_list(connection, household, list_id)
+    statement(connection, """INSERT INTO items
+        (id,household_id,kind,title,details,quantity,category,shopping_list_id,created_by)
+        VALUES(:id,:h,'shopping',:title,:details,:quantity,:category,:list,:actor)""",
+              id=item_id, h=household, list=None if list_id == "default" else list_id, actor=user["id"], **fields)
+
+
 def write(database, user, operation, target, data):
     if user["role"] == "display" or operation == "shopping.list.create" and user["role"] == "child":
         raise DomainError(403, "This account cannot make that shopping change.")
@@ -82,11 +91,7 @@ def write(database, user, operation, target, data):
                 "details": clean(data.get("details", ""), 1000),
             }
             if operation == "shopping.item.create":
-                find_list(connection, household, target)
-                statement(connection, """INSERT INTO items
-                    (id,household_id,kind,title,details,quantity,category,shopping_list_id,created_by)
-                    VALUES(:id,:h,'shopping',:title,:details,:quantity,:category,:list,:actor)""",
-                          id=entity, h=household, list=None if target == "default" else target, actor=user["id"], **fields)
+                add_item(connection, user, target, entity, fields)
             else:
                 version = check_version(connection, household, entity, data) + 1
                 statement(connection, """UPDATE items SET title=:title,details=:details,quantity=:quantity,

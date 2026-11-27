@@ -43,7 +43,7 @@ export function calendarEvent(event, canEdit, compact = false, day = event.occur
     ${event.details ? `<span class="item-detail">${h(event.details)}</span>` : ''}`}`;
   const style = `calendar-event calendar-color-${color}${compact ? ' calendar-event-compact' : ''}`;
   return canEdit
-    ? `<button type="button" class="${style}" data-calendar-edit="${h(event.id)}" data-calendar-occurrence="${h(firstDay)}">${text}</button>`
+    ? `<button type="button" class="${style}" data-calendar-edit="${h(event.id)}" data-calendar-occurrence="${h(event.occurrenceDate || firstDay)}">${text}</button>`
     : `<div class="${style}">${text}</div>`;
 }
 
@@ -132,6 +132,7 @@ export function calendarForm(event, memberList, day, skippedDay, allDay) {
   if (repeat === 'imported') choices.push(['imported', 'Imported recurrence rule']);
   return `<header class="greeting"><h1>${event?.id ? 'Edit calendar event' : 'New calendar event'}</h1></header>
   <form id="calendar-event-form" class="card form form-card">
+    ${event?.timezone ? `<p class="subtle">Event timezone · ${h(event.timezone)}</p>` : ''}
     <label class="field">Event title<input name="title" maxlength="120" value="${h(event?.title)}" required></label>
     <label class="field">Notes<textarea name="details" maxlength="1000">${h(event?.details)}</textarea></label>
     <label class="calendar-checkbox"><input type="checkbox" name="allDay" ${allDay ? 'checked' : ''}> All-day event</label>

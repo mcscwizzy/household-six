@@ -10,19 +10,19 @@ Status terms: **Complete and tested**, **Implemented but unverified**, **Partial
 | Today dashboard | Partial | The authenticated dashboard uses the household timezone for appointments, upcoming events, dated chores and meals. It includes open shopping counts and ledger balances. |
 | Calendar and integrations | Partial | Month, week, day, agenda, member colors and filters, event CRUD, timed and all-day events, daily-to-yearly recurrence, skipped dates and iCalendar exchange run locally. Updated-instance imports, multiple calendars, reminders, birthdays, CalDAV and optional Google/Outlook/iCloud integrations remain. |
 | Shopping | Complete and tested | Multiple lists, categorized items, quantities, editing, deletion, shopping mode, household SSE and offline completion. Live HTTP, Chromium and WebKit exercised. |
-| Tasks, chores, routines and habits | Partial | Generic task/list records and idempotent point grant exist. Occurrences, recurrence templates, subtasks, approvals, routine steps, streaks, reminders and history remain. |
-| Rewards, redemptions and allowance | Partial | Task points ledger exists. Reward store, approval workflow, redemption, allowance ledger and overdraft prevention remain. |
-| Meal plan, recipes and groceries | Partial | Generic meal/recipe/list records exist. Weekly meal grid, structured ingredients, scaling, imports, deterministic aggregation, pantry-aware grocery generation and shopping mode remain. |
-| Pantry, refrigerator and freezer | Partial | Generic inventory list only. Locations, quantities, units, thresholds, expiration, consumption/restocking, barcodes and reminders remain. |
+| Tasks, chores, routines and habits | Partial | Daily and weekly chores, shared and individual assignments, morning and bedtime grouping, history, and adult approval are implemented. Habits, streaks, subtasks and reminders remain. |
+| Rewards, redemptions and allowance | Partial | Reward store, adult approval, redemption and transactional balance checks are implemented. Allowance remains. |
+| Meal plan, recipes and groceries | Partial | Weekly meal slots, structured recipes, scaling and deterministic grocery sync are implemented. Pantry-aware subtraction and additional recipe import formats remain. |
+| Pantry, refrigerator and freezer | Partial | Pantry, refrigerator and freezer locations, exact quantities, units, expiry, low stock, consumption/restocking and recent history are implemented. Barcodes and reminders remain. |
 | Household maintenance and vehicles | Incomplete | Assets, recurring service/mileage schedules, cost and completion history absent. |
-| Announcements and devotional | Partial | Basic announcement records exist. Pin/expiry/targeting/acknowledgments absent. Devotional content, references, prayers and reading plans absent. |
+| Announcements and devotional | Partial | Household-wide announcements support pinning, expiry and per-member acknowledgment. Targeting, devotional content, prayers and reading plans remain. |
 | Documents and emergency information | Incomplete | No authenticated upload, access-controlled search/preview or emergency data model. |
 | Budgeting | Incomplete | No manual income/bills/expenses/goals or exact-currency summaries. No banking integrations are planned. |
-| Photos and command-center display | Incomplete | No album/media upload, slideshow, display session, hours or overlays. |
+| Photos and command-center display | Partial | The household display shows the local clock, appointments, chores, meals and pinned announcements. Photo albums, slideshows and display scheduling remain. |
 | PWA and household visual system | Partial | Existing responsive shell, manifest, service worker and SVG mark. PNG, Apple touch and maskable icons are included. Chromium and WebKit exercised 320–1440 px viewports with light and dark screenshots. Physical iPhone testing remains. |
-| SSE and background scheduling | Partial | Household-scoped process-local SSE with reconnect behavior exists. Durable revision/replay, cross-worker coordination, persistent scheduler, leases/recovery and notifications absent. |
-| Six assistant and local AI | Incomplete | No Ollama integration, deterministic intents, pending action review, OCR jobs or evaluation suite. Default remains disabled. |
-| Private MCP | Incomplete | SDK/transport/tokens/scopes/audit tools absent and disabled. No external tunnel is configured. |
+| SSE and background scheduling | Partial | Household-scoped process-local SSE with reconnect behavior exists. Six has a bounded persistent queue with interrupted-job recovery. Durable SSE replay, cross-worker coordination, general reminders and notifications remain. |
+| Six assistant and local AI | Partial | Local Ollama, typed proposals with adult confirmation, scoped queries, recipe extraction and document/image text extraction. Six evaluated six synthetic text cases locally. Broader evaluation remains. |
+| Private MCP | Complete and tested | Optional stdio transport, expiring scoped credentials, live revocation, audited reads and optional grocery proposals. Tested with the installed Python SDK. |
 | NAS deployment and backups | Partial | Existing Dockerfile/Compose and SQLite online backup/restore exist. A disposable loopback Compose project ran Uvicorn, preserved an authenticated completion through restart and restored to a separate local volume. Files/config backup and physical NAS verification remain. |
 | CI, integration and browser testing | Partial | The Python unit and live HTTP suite, local Compose build/restart/restore, and Playwright Chromium and WebKit passed locally. Check GitHub Actions separately. |
 

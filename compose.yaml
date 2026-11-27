@@ -1,6 +1,10 @@
 services:
   household-six:
-    build: .
+    build:
+      context: .
+      args:
+        WITH_MCP: ${WITH_MCP:-0}
+        WITH_LOCAL_OCR: ${WITH_LOCAL_OCR:-0}
     image: ${HOUSEHOLD_SIX_IMAGE:-household-six:local}
     restart: unless-stopped
     environment:
@@ -11,6 +15,11 @@ services:
       SESSION_DAYS: ${SESSION_DAYS:-14}
       TZ: ${HOUSEHOLD_TIMEZONE:-America/Chicago}
       HOUSEHOLD_TIMEZONE: ${HOUSEHOLD_TIMEZONE:-America/Chicago}
+      AI_ENABLED: ${AI_ENABLED:-false}
+      AI_BASE_URL: ${AI_BASE_URL:-http://ollama:11434}
+      AI_MODEL: ${AI_MODEL:-qwen3.5:0.8b}
+      AI_KEEP_ALIVE: ${AI_KEEP_ALIVE:-2m}
+      MCP_ENABLED: ${MCP_ENABLED:-false}
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8088}:3000"
     volumes:
@@ -30,6 +39,23 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+    networks: [household]
+  ollama:
+    image: ollama/ollama:0.40.19
+    profiles: [six]
+    restart: unless-stopped
+    environment:
+      OLLAMA_NO_CLOUD: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_CONTEXT_LENGTH: "4096"
+      OLLAMA_KEEP_ALIVE: ${AI_KEEP_ALIVE:-2m}
+    volumes:
+      - household-six-models:/root/.ollama
+    security_opt:
+      - no-new-privileges:true
+    cpus: 2.0
+    mem_limit: 4g
     networks: [household]
   caddy:
     image: caddy:2.9.1-alpine
@@ -53,3 +79,4 @@ volumes:
   household-six-data:
   household-six-restore-data:
   household-six-backups:
+  household-six-models:

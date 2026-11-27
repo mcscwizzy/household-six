@@ -173,7 +173,7 @@ class HouseholdServiceTest(unittest.TestCase):
                 ledger=upgraded.execute("SELECT id,amount FROM points_ledger WHERE id='legacy-ledger'").fetchone()
                 self.assertEqual((ledger["id"],ledger["amount"]), ("legacy-ledger",3))
                 versions={row[0] for row in upgraded.execute("SELECT version FROM schema_migrations")}
-                self.assertEqual(versions, {1, 2, 3, 4})
+                self.assertEqual(versions, set(range(1, 12)))
                 self.assertIn("disabled_at", {row[1] for row in upgraded.execute("PRAGMA table_info(users)")})
                 upgraded.close()
             finally:

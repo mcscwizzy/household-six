@@ -24,8 +24,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 
-from app import calendar_service, dashboard, database, shopping
-from app.mutations import DomainError
+from app import announcements, assistant, calendar_service, chores, dashboard, database, inventory, meals, rewards, shopping
+from app.mutations import DomainError, Mutation, row, statement
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("DATA_DIR", ROOT / "data"))
@@ -187,18 +187,23 @@ def lookup_session(con, session_hash, now=None):
         WHERE s.id_hash=? AND s.expires_at>? AND u.disabled_at IS NULL""", (session_hash, now)).fetchone()
 
 
-def list_items(con, household_id, kind):
+def list_items(con, household_id, kind, day=None):
     return con.execute("""SELECT i.id,i.kind,i.title,i.details,i.due_at,i.assigned_to,i.completed,i.value,i.version,i.created_at,
         u.display_name assigned_name,u.color assigned_color
         FROM items i LEFT JOIN users u ON u.id=i.assigned_to AND u.household_id=i.household_id
-        WHERE i.household_id=? AND i.kind=? AND i.deleted_at IS NULL ORDER BY i.completed,COALESCE(i.due_at,i.created_at),i.created_at DESC LIMIT 250""", (household_id, kind)).fetchall()
+        WHERE i.household_id=? AND i.kind=? AND i.deleted_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM chore_completions c WHERE c.id=i.id AND c.household_id=i.household_id)
+        AND NOT EXISTS (SELECT 1 FROM announcement_settings a WHERE a.id=i.id AND a.household_id=i.household_id AND a.expires_on<?)
+        ORDER BY i.completed,COALESCE(i.due_at,i.created_at),i.created_at DESC LIMIT 250""", (household_id, kind, day)).fetchall()
 
 
 def complete_item(con, iid, household_id, actor_id, role, expected_version=None):
     item = con.execute("SELECT * FROM items WHERE id=? AND household_id=? AND deleted_at IS NULL", (iid, household_id)).fetchone()
     if not item:
         return None
-    if item["kind"] not in {"task", "shopping"}:
+    if item["kind"] not in {"task", "shopping"} or con.execute(
+        "SELECT 1 FROM chore_completions WHERE household_id=? AND id=?", (household_id, iid),
+    ).fetchone():
         raise PermissionError("This household record does not support completion.")
     if role == "display":
         raise PermissionError("This read-only display cannot change household data.")
@@ -291,7 +296,7 @@ class RequestContext:
                 if kind not in KINDS:
                     return self.json(400, {"error": "Choose a supported household list."})
                 with connect() as con:
-                    rows = list_items(con, user["household_id"], kind)
+                    rows = list_items(con, user["household_id"], kind, announcements.current_day(user))
                 return self.json(200, {"items": [dict(r) for r in rows]})
             if path == "/api/summary":
                 with connect() as con:
@@ -370,6 +375,8 @@ class RequestContext:
             if path == "/api/password":
                 return self.change_password(user, data)
             return self.json(404, {"error": "That action is not available."})
+        except DomainError as exc:
+            return self.json(exc.status, {"error": str(exc)})
         except ValueError as exc:
             return self.json(400, {"error": str(exc)[:180]})
         except Exception:
@@ -498,17 +505,46 @@ class RequestContext:
             return self.json(403, {"error": "Only an adult can assign points to a task."})
         if kind == "task" and user["role"] == "child" and assigned not in (None, user["id"]):
             return self.json(403, {"error": "You can only create tasks assigned to yourself."})
-        with connect() as con:
-            if assigned and not con.execute("SELECT 1 FROM users WHERE id=? AND household_id=?", (assigned,user["household_id"])).fetchone():
+        household, actor = user["household_id"], user["id"]
+        key = self.clean(data.get("idempotencyKey", ""), 80) or None
+        with database.engine(DB_PATH).connect() as con:
+            con.exec_driver_sql("BEGIN IMMEDIATE")
+            mutation = Mutation(con, user, "item.create", data, kind) if "mutationId" in data else None
+            entity = mutation.replay_id if mutation else None
+            fields = {"h": household, "actor": actor, "kind": kind, "title": title,
+                      "details": details, "due": due, "assigned": assigned, "value": value, "key": key}
+            if not entity and key:
+                prior = row(con, "SELECT * FROM items WHERE household_id=:h AND idempotency_key=:key", **fields)
+                if prior:
+                    check = {"created_by": actor, "kind": kind, "title": title, "details": details,
+                             "due_at": due, "assigned_to": assigned, "value": value}
+                    if any(prior[name] != original for name, original in check.items()):
+                        return self.json(409, {"error": "This request conflicts with a previous change."})
+                    entity = prior["id"]
+            if entity:
+                existing = row(con, """SELECT id,kind,title,details,due_at,assigned_to,completed,value,version
+                    FROM items WHERE id=:id AND household_id=:h AND deleted_at IS NULL""", h=household, id=entity)
+                if not existing:
+                    return self.json(404, {"error": "That household item was not found."})
+                return self.json(201, dict(existing))
+            if assigned and not row(con, "SELECT 1 FROM users WHERE id=:assigned AND household_id=:h AND disabled_at IS NULL", **fields):
                 raise ValueError("Choose a member in this household.")
             iid = new_id()
-            key = self.clean(data.get("idempotencyKey", ""), 80) or None
-            con.execute("INSERT INTO items(id,household_id,kind,title,details,due_at,assigned_to,value,idempotency_key,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)", (iid,user["household_id"],kind,title,details,due,assigned,value,key,user["id"]))
-            con.execute("INSERT INTO audit_log(id,household_id,actor_id,action,object_id) VALUES(?,?,?,'item.create',?)", (new_id(),user["household_id"],user["id"],iid))
-        EVENTS.publish(user["household_id"], {"kind": kind, "id": iid, "action": "created"})
-        return self.json(201, {"id": iid,"kind":kind,"title":title,"details":details,"due_at":due,"assigned_to":assigned,"completed":0,"value":value,"version":1})
+            statement(con, """INSERT INTO items(id,household_id,kind,title,details,due_at,assigned_to,value,idempotency_key,created_by)
+                VALUES(:id,:h,:kind,:title,:details,:due,:assigned,:value,:key,:actor)""", id=iid, **fields)
+            if mutation:
+                mutation.finish(iid, 1)
+            else:
+                statement(con, """INSERT INTO audit_log(id,household_id,actor_id,action,object_id)
+                    VALUES(:audit,:h,:actor,'item.create',:id)""", audit=new_id(), id=iid, **fields)
+            con.commit()
+        EVENTS.publish(household, {"kind": kind, "id": iid, "action": "created"})
+        return self.json(201, {"id": iid, "kind": kind, "title": title, "details": details, "due_at": due,
+                               "assigned_to": assigned, "completed": 0, "value": value, "version": 1})
 
     def complete_item(self, user, iid, data):
+        if "memberId" in data and data["memberId"] != user["id"]:
+            return self.json(403, {"error": "Sign in as the member who queued this completion."})
         expected = data.get("expectedVersion")
         mutation_id = data.get("mutationId")
         if not isinstance(expected, int) or isinstance(expected, bool) or expected < 1:
@@ -564,7 +600,12 @@ def secure_cookie():
 @asynccontextmanager
 async def lifespan(_):
     await run_in_threadpool(migrate)
-    yield
+    stop = await run_in_threadpool(assistant.start_worker, database.engine(DB_PATH)) if assistant.enabled() else None
+    try:
+        yield
+    finally:
+        if stop:
+            stop.set()
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
@@ -703,10 +744,128 @@ def dashboard_read(request: Request):
     return dashboard.load(database.engine(DB_PATH), user)
 
 
+@app.get("/api/chores")
+def chores_read(request: Request, date: str | None = None):
+    user = authorized(RequestContext(request))
+    return chores.load(database.engine(DB_PATH), user, date)
+
+
+@app.get("/api/rewards")
+def rewards_read(request: Request):
+    user = authorized(RequestContext(request))
+    return rewards.load(database.engine(DB_PATH), user)
+
+
+async def chores_write(request: Request):
+    return await domain_write(request, chores, "task")
+
+
+async def rewards_write(request: Request):
+    return await domain_write(request, rewards, "reward")
+
+
+for path, method, operation in (
+    ("", "POST", "chore.create"),
+    ("/{target}", "PUT", "chore.update"),
+    ("/{target}", "DELETE", "chore.archive"),
+    ("/{target}/complete", "POST", "chore.complete"),
+    ("/occurrences/{target}/review", "POST", "chore.review"),
+):
+    app.add_api_route("/api/chores" + path, chores_write, methods=[method], name=operation)
+
+for path, method, operation in (
+    ("", "POST", "reward.create"),
+    ("/{target}", "PUT", "reward.update"),
+    ("/{target}", "DELETE", "reward.archive"),
+    ("/{target}/request", "POST", "reward.request"),
+    ("/redemptions/{target}/review", "POST", "reward.review"),
+):
+    app.add_api_route("/api/rewards" + path, rewards_write, methods=[method], name=operation)
+
+
+@app.get("/api/recipes")
+def recipes_read(request: Request):
+    user = authorized(RequestContext(request))
+    return meals.recipes(database.engine(DB_PATH), user)
+
+
+@app.get("/api/meals")
+def meals_read(request: Request, date: str | None = None):
+    user = authorized(RequestContext(request))
+    return meals.plan(database.engine(DB_PATH), user, date)
+
+
+async def meals_write(request: Request):
+    return await domain_write(request, meals, "meal")
+
+
+for base, kind in (("/api/recipes", "recipe"), ("/api/meals", "meal")):
+    app.add_api_route(base, meals_write, methods=["POST"], name=f"{kind}.create")
+    app.add_api_route(base + "/{target}", meals_write, methods=["PUT"], name=f"{kind}.update")
+    app.add_api_route(base + "/{target}", meals_write, methods=["DELETE"], name=f"{kind}.archive")
+app.add_api_route("/api/meals/groceries", meals_write, methods=["POST"], name="meal.groceries")
+
+
+@app.get("/api/six")
+def six_read(request: Request):
+    user = authorized(RequestContext(request))
+    if not assistant.available():
+        return {"modelEnabled": False, "jobs": []}
+    return assistant.list_jobs(database.engine(DB_PATH), user)
+
+
+async def six_write(request: Request):
+    if not assistant.available():
+        raise DomainError(404, "The assistant is disabled.")
+    return await domain_write(request, assistant, "six", limit=800_000)
+
+
+app.add_api_route("/api/six", six_write, methods=["POST"], name="six.enqueue")
+app.add_api_route("/api/six/{target}/decision", six_write, methods=["POST"], name="six.decision")
+
+
+@app.get("/api/inventory")
+def inventory_read(request: Request, location: str = ""):
+    user = authorized(RequestContext(request))
+    return inventory.load(database.engine(DB_PATH), user, location)
+
+
+async def inventory_write(request: Request):
+    return await domain_write(request, inventory, "inventory")
+
+
+for path, method, operation in (
+    ("", "POST", "inventory.create"),
+    ("/{target}", "PUT", "inventory.update"),
+    ("/{target}", "DELETE", "inventory.archive"),
+    ("/{target}/stock", "POST", "inventory.stock"),
+):
+    app.add_api_route("/api/inventory" + path, inventory_write, methods=[method], name=operation)
+
+
+@app.get("/api/announcements")
+def announcements_read(request: Request, include_expired: bool = False):
+    user = authorized(RequestContext(request))
+    return announcements.load(database.engine(DB_PATH), user, archive=include_expired)
+
+
+async def announcements_write(request: Request):
+    return await domain_write(request, announcements, "announcement")
+
+
+for path, method, operation in (
+    ("", "POST", "announcement.create"),
+    ("/{target}", "PUT", "announcement.update"),
+    ("/{target}", "DELETE", "announcement.archive"),
+    ("/{target}/ack", "POST", "announcement.ack"),
+):
+    app.add_api_route("/api/announcements" + path, announcements_write, methods=[method], name=operation)
+
+
 STATIC_FILES = {
     "index.html": "text/html", "app.js": "text/javascript", "offline.js": "text/javascript",
     "shopping.js": "text/javascript", "html.js": "text/javascript",
-    "calendar.js": "text/javascript", "dashboard.js": "text/javascript", "dates.js": "text/javascript", "style.css": "text/css",
+    "chores.js": "text/javascript", "rewards.js": "text/javascript", "meals.js": "text/javascript", "six.js": "text/javascript", "announcements.js": "text/javascript", "inventory.js": "text/javascript", "calendar.js": "text/javascript", "dashboard.js": "text/javascript", "dates.js": "text/javascript", "style.css": "text/css",
     "manifest.webmanifest": "application/manifest+json", "sw.js": "text/javascript",
     "logo.svg": "image/svg+xml", "icon.svg": "image/svg+xml",
     **dict.fromkeys(("apple-touch-icon.png", "pwa-192.png", "pwa-512.png", "pwa-maskable-512.png"), "image/png"),

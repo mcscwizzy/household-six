@@ -2,9 +2,9 @@
 
 **Your household. Your hardware. Your data.**
 
-Household Six is an independently developed, self-hosted household organizer. This repository currently contains an early, runnable private alpha with local authentication, household-scoped SQLite persistence, a responsive installable web shell, and working shared lists for tasks, events, meals, shopping, recipes, inventory, rewards, and announcements.
+Household Six is an independently developed, self-hosted household organizer. It includes a household calendar, chore and reward approvals, weekly meals and recipes, grocery synchronization, shopping lists, food inventory, announcements and a display mode. Six and private MCP are optional.
 
-This is not a completed substitute for every feature in Skylight Calendar. The implementation status and platform limits are in [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) and [docs/FEATURE_PARITY.md](docs/FEATURE_PARITY.md).
+See [implementation status](IMPLEMENTATION_STATUS.md) and the [feature matrix](docs/FEATURE_PARITY.md) for tested workflows and the remaining product backlog.
 
 ## Run locally
 
@@ -22,12 +22,10 @@ Visit <http://localhost:3000>. First-run setup creates the local owner. Use a un
 ## Docker Compose
 
 ```sh
-cp .env.example .env
-mkdir -p data
-docker compose up -d --build
+APP_URL=http://localhost:8088 docker compose up -d --build household-six
 ```
 
-By default, Compose binds the app to `127.0.0.1:8088` and stores data in persistent Docker volumes. For the included local HTTPS proxy, set up local DNS for `householdsix.home.arpa`, then run:
+Open <http://localhost:8088> on the host. By default, Compose binds the app to `127.0.0.1:8088` and stores data in persistent Docker volumes. For the included local HTTPS proxy, set up local DNS for `householdsix.home.arpa`, then run:
 
 ```sh
 docker compose --profile caddy up -d --build

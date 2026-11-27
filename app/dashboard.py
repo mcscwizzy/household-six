@@ -1,21 +1,10 @@
 """Build the household's Today view at the server's local date boundary."""
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from app import calendar_service
+from app import calendar_service, chores as chore_service
+from app.dates import local_day
 from app.mutations import statement
-
-
-def local_day(value, zone):
-    if not value:
-        return None
-    try:
-        if len(value) == 10:
-            return date.fromisoformat(value)
-        point = datetime.fromisoformat(value)
-        return (point.astimezone(zone) if point.tzinfo else point).date()
-    except (ValueError, OverflowError):
-        return None
 
 
 def load(database, user):
@@ -30,13 +19,18 @@ def load(database, user):
         collection = appointments if start <= today else upcoming
         collection.append(entry)
 
+    board = chore_service.load_dates(database, user, [day - timedelta(days=offset) for offset in range(29, -1, -1)])
+    scheduled = [entry for entry in board['scheduled'] if entry['date'] == today]
+    scheduled_overdue = [entry for entry in board['scheduled'] if entry['date'] < today and entry['status'] in {'open', 'declined'}]
     chores, overdue, unscheduled, meals = [], [], [], []
     household = user["household_id"]
     with database.connect() as connection:
         records = statement(connection, """SELECT i.id,i.kind,i.title,i.details,i.due_at,i.assigned_to,
-             i.completed,i.value,i.version,u.display_name AS assigned_name
+             i.completed,i.value,i.version,u.display_name AS assigned_name,ms.slot,ms.servings
              FROM items i LEFT JOIN users u ON u.id=i.assigned_to AND u.household_id=i.household_id
+             LEFT JOIN meal_slots ms ON ms.id=i.id AND ms.household_id=i.household_id
              WHERE i.household_id=:h AND i.kind IN ('task','meal') AND i.deleted_at IS NULL
+             AND NOT EXISTS (SELECT 1 FROM chore_completions c WHERE c.id=i.id AND c.household_id=i.household_id)
              ORDER BY i.completed,i.due_at,i.created_at,i.id""", h=household).mappings()
         for record in records:
             due = local_day(record["due_at"], zone)
@@ -60,5 +54,5 @@ def load(database, user):
             WHERE u.household_id=:h AND u.disabled_at IS NULL AND u.role<>'display'
             GROUP BY u.id ORDER BY u.created_at,u.id""", h=household).mappings()
         return {"date": today, "appointments": appointments, "upcoming": upcoming,
-                "chores": chores, "overdue": overdue, "unscheduled": unscheduled, "meals": meals,
+                "chores": chores, "overdue": overdue, "scheduledChores": scheduled, "scheduledOverdue": scheduled_overdue, "unscheduled": unscheduled, "meals": meals,
                 "shopping": [dict(entry) for entry in shopping], "balances": [dict(entry) for entry in balances]}

@@ -19,8 +19,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
-      - run: python -m pip install --require-hashes -r requirements.lock
-      - run: HOUSEHOLD_SIX_LIVE=1 python -m unittest discover -s tests -v
+      - run: python -m pip install --require-hashes -r requirements-optional.lock
+      - run: HOUSEHOLD_SIX_LIVE=1 HOUSEHOLD_SIX_MCP_LIVE=1 python -m unittest discover -s tests -v
       - run: python -m compileall -q app tests scripts
       - run: node --check app/static/app.js
       - run: docker compose config --quiet
@@ -43,12 +43,12 @@ jobs:
           python-version: "3.12"
       - run: docker compose up -d --build household-six
       - name: Wait for application health
-        run: curl --fail --retry 30 --retry-delay 2 --retry-connrefused http://127.0.0.1:18088/api/health
+        run: curl --fail --retry 30 --retry-delay 2 --retry-all-errors http://127.0.0.1:18088/api/health
       - name: Create household and persist authenticated completion
         run: python scripts/compose_smoke.py create
       - run: docker compose restart household-six
       - name: Wait after restart
-        run: curl --fail --retry 30 --retry-delay 2 --retry-connrefused http://127.0.0.1:18088/api/health
+        run: curl --fail --retry 30 --retry-delay 2 --retry-all-errors http://127.0.0.1:18088/api/health
       - name: Verify session and data survive restart
         run: python scripts/compose_smoke.py verify
       - if: always()
@@ -73,7 +73,7 @@ jobs:
           DATA_DIR="$RUNNER_TEMP/household-six-e2e" BIND_ADDRESS=127.0.0.1 APP_PORT=3000 APP_URL=http://127.0.0.1:3000 python -m app.server > "$RUNNER_TEMP/household-six-e2e.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/household-six-e2e.pid"
       - name: Wait for application health
-        run: curl --fail --retry 30 --retry-delay 2 --retry-connrefused http://127.0.0.1:3000/api/health
+        run: curl --fail --retry 30 --retry-delay 2 --retry-all-errors http://127.0.0.1:3000/api/health
       - name: Run Chromium and WebKit journeys and viewport checks
         env:
           HOUSEHOLD_SIX_URL: http://127.0.0.1:3000
