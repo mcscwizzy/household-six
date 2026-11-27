@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 
-from app import announcements, assistant, calendar_service, chores, dashboard, database, inventory, meals, rewards, shopping
+from app import allowance, announcements, assistant, calendar_service, chores, dashboard, database, habits, inventory, meals, rewards, shopping
 from app.mutations import DomainError, Mutation, row, statement
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -376,9 +376,9 @@ class RequestContext:
                 return self.change_password(user, data)
             return self.json(404, {"error": "That action is not available."})
         except DomainError as exc:
-            return self.json(exc.status, {"error": str(exc)})
-        except ValueError as exc:
-            return self.json(400, {"error": str(exc)[:180]})
+            return self.json(exc.status, {"error": exc.public_message})
+        except ValueError:
+            return self.json(400, {"error": "Check the request fields and try again."})
         except Exception:
             return self.json(500, {"error": "Request could not be completed.", "requestId": new_id()})
 
@@ -388,14 +388,14 @@ class RequestContext:
         display = self.clean(data.get("displayName"), 70)
         household = self.clean(data.get("household"), 70)
         if not username or len(username) < 3 or not display or not household:
-            raise ValueError("Enter a household, your name, and a username with at least 3 characters.")
+            raise DomainError(400, "Enter a household, your name, and a username with at least 3 characters.")
         if not isinstance(password, str) or len(password) < 12 or len(password) > 200:
-            raise ValueError("Choose a password between 12 and 200 characters.")
+            raise DomainError(400, "Choose a password between 12 and 200 characters.")
         timezone_name = os.environ.get("HOUSEHOLD_TIMEZONE", "America/Chicago")
         try:
             ZoneInfo(timezone_name)
         except (ZoneInfoNotFoundError, ValueError):
-            raise ValueError("The configured household timezone is invalid.") from None
+            raise DomainError(400, "The configured household timezone is invalid.") from None
         con = connect()
         try:
             con.execute("BEGIN IMMEDIATE")
@@ -450,13 +450,13 @@ class RequestContext:
         password = data.get("password", "")
         color = data.get("color", "#78937D")
         if not name or not username or len(username) < 3:
-            raise ValueError("Enter a name and username with at least 3 characters.")
+            raise DomainError(400, "Enter a name and username with at least 3 characters.")
         if not isinstance(role, str) or role not in {"admin", "adult", "child", "display"}:
-            raise ValueError("Choose an available member role.")
+            raise DomainError(400, "Choose an available member role.")
         if not can_create_member(user["role"], role):
             return self.json(403, {"error": "You are not allowed to add that household role."})
         if not isinstance(password, str) or len(password) > 200 or (role != "child" or password) and len(password) < 12:
-            raise ValueError("Choose a password between 12 and 200 characters.")
+            raise DomainError(400, "Choose a password between 12 and 200 characters.")
         if not isinstance(color, str) or color not in COLORS:
             color = "#78937D"
         uid = new_id()
@@ -465,7 +465,7 @@ class RequestContext:
                 con.execute("INSERT INTO users(id,household_id,username,password_hash,display_name,role,color) VALUES(?,?,?,?,?,?,?)", (uid,user["household_id"],username,pw_hash(password or secrets.token_urlsafe(24)),name,role,color))
                 con.execute("INSERT INTO audit_log(id,household_id,actor_id,action,object_id) VALUES(?,?,?,'member.create',?)", (new_id(),user["household_id"],user["id"],uid))
         except sqlite3.IntegrityError:
-            raise ValueError("That username is already in use.")
+            raise DomainError(400, "That username is already in use.")
         EVENTS.publish(user["household_id"], {"kind": "member", "id": uid, "action": "created"})
         return self.json(201, {"id": uid, "displayName": name, "role": role, "color": color})
 
@@ -473,7 +473,7 @@ class RequestContext:
         current = data.get("currentPassword", "")
         password = data.get("newPassword", "")
         if not isinstance(password, str) or len(password) < 12 or len(password) > 200:
-            raise ValueError("Choose a password between 12 and 200 characters.")
+            raise DomainError(400, "Choose a password between 12 and 200 characters.")
         with connect() as con:
             row = con.execute("SELECT password_hash FROM users WHERE id=? AND household_id=?", (user["id"],user["household_id"])).fetchone()
             if not row or not isinstance(current, str) or len(current) > 200 or not verify_password(current, row["password_hash"]):
@@ -491,16 +491,16 @@ class RequestContext:
         assigned = self.clean(data.get("assignedTo", ""), 40) or (user["id"] if kind == "task" and user["role"] == "child" else None)
         value = data.get("points", 0)
         if not isinstance(kind, str) or kind not in KINDS or not title:
-            raise ValueError("Choose a list and provide a title.")
+            raise DomainError(400, "Choose a list and provide a title.")
         if not can_create_item(user["role"], kind):
             return self.json(403, {"error": "This account cannot create that household record."})
         if due:
             try:
                 datetime.fromisoformat(due.replace("Z", "+00:00"))
             except ValueError:
-                raise ValueError("Enter a valid date or date and time.")
+                raise DomainError(400, "Enter a valid date or date and time.")
         if type(value) is not int or value < 0 or value > 10000:
-            raise ValueError("Points must be a whole number from 0 to 10,000.")
+            raise DomainError(400, "Points must be a whole number from 0 to 10,000.")
         if kind == "task" and value and user["role"] not in PRIVILEGED:
             return self.json(403, {"error": "Only an adult can assign points to a task."})
         if kind == "task" and user["role"] == "child" and assigned not in (None, user["id"]):
@@ -528,7 +528,7 @@ class RequestContext:
                     return self.json(404, {"error": "That household item was not found."})
                 return self.json(201, dict(existing))
             if assigned and not row(con, "SELECT 1 FROM users WHERE id=:assigned AND household_id=:h AND disabled_at IS NULL", **fields):
-                raise ValueError("Choose a member in this household.")
+                raise DomainError(400, "Choose a member in this household.")
             iid = new_id()
             statement(con, """INSERT INTO items(id,household_id,kind,title,details,due_at,assigned_to,value,idempotency_key,created_by)
                 VALUES(:id,:h,:kind,:title,:details,:due,:assigned,:value,:key,:actor)""", id=iid, **fields)
@@ -575,12 +575,12 @@ class RequestContext:
             con.commit()
             EVENTS.publish(user["household_id"], {"kind": updated["kind"], "id": iid, "action": "completed"})
             return self.json(200, result)
-        except ConflictError as exc:
+        except ConflictError:
             con.rollback()
-            return self.json(409, {"error": str(exc)})
-        except PermissionError as exc:
+            return self.json(409, {"error": "This item changed on another device. Refresh and try again."})
+        except PermissionError:
             con.rollback()
-            return self.json(403, {"error": str(exc)})
+            return self.json(403, {"error": "This account cannot complete that item."})
         finally:
             con.close()
 
@@ -589,7 +589,7 @@ class RequestContext:
             return ""
         value = " ".join(value.replace("\x00", "").split())
         if len(value) > limit:
-            raise ValueError(f"Text must be {limit} characters or fewer.")
+            raise DomainError(400, f"Text must be {limit} characters or fewer.")
         return value
 
 
@@ -670,7 +670,7 @@ def authorized(context, *, mutation=None):
 
 @app.exception_handler(DomainError)
 async def domain_error(_, error):
-    return JSONResponse({"error": str(error)}, status_code=error.status)
+    return JSONResponse({"error": error.public_message}, status_code=error.status)
 
 
 @app.get("/api/shopping")
@@ -862,25 +862,58 @@ for path, method, operation in (
     app.add_api_route("/api/announcements" + path, announcements_write, methods=[method], name=operation)
 
 
-STATIC_FILES = {
+@app.get("/api/habits")
+def habits_read(request: Request):
+    user = authorized(RequestContext(request))
+    return habits.load(database.engine(DB_PATH), user)
+
+
+@app.get("/api/allowance")
+def allowance_read(request: Request):
+    user = authorized(RequestContext(request))
+    return allowance.load(database.engine(DB_PATH), user)
+
+
+async def habits_write(request: Request):
+    return await domain_write(request, habits, "habit")
+
+
+async def allowance_write(request: Request):
+    return await domain_write(request, allowance, "allowance")
+
+
+for path, method, operation in (
+    ("", "POST", "habit.create"),
+    ("/{target}", "PUT", "habit.update"),
+    ("/{target}", "DELETE", "habit.archive"),
+    ("/{target}/check", "POST", "habit.check"),
+):
+    app.add_api_route("/api/habits" + path, habits_write, methods=[method], name=operation)
+app.add_api_route("/api/allowance", allowance_write, methods=["POST"], name="allowance.record")
+
+
+STATIC_TYPES = {
     "index.html": "text/html", "app.js": "text/javascript", "offline.js": "text/javascript",
     "shopping.js": "text/javascript", "html.js": "text/javascript",
-    "chores.js": "text/javascript", "rewards.js": "text/javascript", "meals.js": "text/javascript", "six.js": "text/javascript", "announcements.js": "text/javascript", "inventory.js": "text/javascript", "calendar.js": "text/javascript", "dashboard.js": "text/javascript", "dates.js": "text/javascript", "style.css": "text/css",
+    "chores.js": "text/javascript", "rewards.js": "text/javascript", "meals.js": "text/javascript", "six.js": "text/javascript", "members-life.js": "text/javascript", "announcements.js": "text/javascript", "inventory.js": "text/javascript", "calendar.js": "text/javascript", "dashboard.js": "text/javascript", "dates.js": "text/javascript", "style.css": "text/css",
     "manifest.webmanifest": "application/manifest+json", "sw.js": "text/javascript",
     "logo.svg": "image/svg+xml", "icon.svg": "image/svg+xml",
     **dict.fromkeys(("apple-touch-icon.png", "pwa-192.png", "pwa-512.png", "pwa-maskable-512.png"), "image/png"),
+}
+STATIC_FILES = {
+    name: (ROOT / "app" / "static" / name, media_type, "no-cache" if name in {"index.html", "sw.js"} else "public, max-age=3600")
+    for name, media_type in STATIC_TYPES.items()
 }
 
 
 @app.get("/")
 @app.get("/{filename}")
 def static(filename: str = "index.html"):
-    media_type = STATIC_FILES.get(filename)
-    if not media_type:
+    entry = STATIC_FILES.get(filename)
+    if entry is None:
         raise HTTPException(404, "Page not found.")
-    cache = "no-cache" if filename == "sw.js" or filename == "index.html" else "public, max-age=3600"
-    return FileResponse(ROOT / "app" / "static" / filename, media_type=media_type,
-                        headers={"Cache-Control": cache})
+    path, media_type, cache = entry
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": cache})
 
 
 if __name__ == "__main__":

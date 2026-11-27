@@ -69,6 +69,8 @@ class RuntimeTest(unittest.TestCase):
         owner, child = self.client(), self.client()
         password = "A disposable passphrase"
         self.assertEqual(self.request(owner, "/api/members")[0], 401)
+        self.assertEqual(self.request(owner, "/requirements.lock")[0], 404)
+        self.assertEqual(self.request(owner, "/api/setup", ["invalid"]), (400, {"error": "Expected a JSON object."}))
         status, setup = self.request(owner, "/api/setup", {
             "household": "Runtime Test", "displayName": "Parent", "username": "parent", "password": password,
         })
@@ -457,3 +459,40 @@ class RuntimeTest(unittest.TestCase):
                     time.sleep(.5)
                 self.assertEqual(job["state"], "result", job["result"])
                 self.assertIn(expected, job["result"]["extracted_text"].lower())
+
+    def test_habit_streaks_and_immutable_allowance(self):
+        owner, child = self.client(), self.client()
+        owner_auth = self.setup_owner(owner)
+        password = "A disposable passphrase"
+        _, member = self.request(owner, "/api/members", {
+            "csrf": owner_auth["csrf"], "displayName": "Child", "username": "child", "role": "child", "password": password,
+        })
+        _, child_auth = self.request(child, "/api/login", {"username": "child", "password": password})
+
+        def write(client, auth, path, fields, operation=None):
+            return self.request(client, path, {**fields, "csrf": auth["csrf"], "mutationId": operation or str(uuid.uuid4())})
+
+        status, habit = write(child, child_auth, "/api/habits", {"title": "Read a book"})
+        self.assertEqual(status, 201)
+        _, initial = self.request(child, "/api/habits")
+        change = {"expectedVersion": habit["version"], "date": initial["date"]}
+        request_id = str(uuid.uuid4())
+        path = f"/api/habits/{habit['id']}/check"
+        self.assertEqual(write(child, child_auth, path, change, request_id)[1]["streak"], 1)
+        self.assertEqual(write(child, child_auth, path, change, request_id)[1]["streak"], 1)
+        _, board = self.request(child, "/api/habits")
+        self.assertEqual(len(board["habits"][0]["days"]), 1)
+
+        fields = {"memberId": member["id"], "amount": "5.50", "direction": "credit",
+                  "note": "Weekly allowance", "expectedVersion": 1}
+        self.assertEqual(write(child, child_auth, "/api/allowance", fields)[0], 403)
+        self.assertEqual(write(owner, owner_auth, "/api/allowance", fields)[1]["balance"], 550)
+        self.assertEqual(write(owner, owner_auth, "/api/allowance", fields)[0], 409)
+        fields.update({"direction": "paid", "amount": "6", "expectedVersion": 2})
+        self.assertEqual(write(owner, owner_auth, "/api/allowance", fields)[0], 409)
+        fields["amount"] = "2.25"
+        self.assertEqual(write(owner, owner_auth, "/api/allowance", fields)[1]["balance"], 325)
+        _, ledger = self.request(child, "/api/allowance")
+        self.assertEqual(len(ledger["wallets"]), 1)
+        self.assertEqual(ledger["wallets"][0]["balance"], 325)
+        self.assertEqual(len(ledger["entries"]), 2)

@@ -1,5 +1,5 @@
-const CACHE = 'household-six-shell-v17';
-const SHELL = ['/', '/style.css', '/app.js', '/offline.js', '/shopping.js', '/html.js', '/calendar.js', '/chores.js', '/rewards.js', '/meals.js', '/six.js', '/inventory.js', '/announcements.js', '/dashboard.js', '/dates.js', '/manifest.webmanifest', '/logo.svg', '/icon.svg',
+const CACHE = 'household-six-shell-v18';
+const SHELL = ['/', '/style.css', '/app.js', '/offline.js', '/shopping.js', '/html.js', '/calendar.js', '/chores.js', '/rewards.js', '/meals.js', '/six.js', '/members-life.js', '/inventory.js', '/announcements.js', '/dashboard.js', '/dates.js', '/manifest.webmanifest', '/logo.svg', '/icon.svg',
   '/apple-touch-icon.png', '/pwa-192.png', '/pwa-512.png', '/pwa-maskable-512.png'];
 
 self.addEventListener('install', event => {

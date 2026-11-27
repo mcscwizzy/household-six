@@ -105,3 +105,6 @@ button:disabled { opacity:.65; cursor:default; }
 .wall-card ul { list-style:none; padding:0; }
 .wall-card li { padding:8px 0; border-top:1px solid var(--line); overflow-wrap:anywhere; }
 .wall-card p { margin:4px 0; }
+
+.allowance-record { margin-top:14px; }
+.allowance-record h2 { margin:0; font-size:1.1rem; }

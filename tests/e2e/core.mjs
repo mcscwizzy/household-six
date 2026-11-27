@@ -231,6 +231,29 @@ for (const engine of [chromium, webkit]) {
   await page.locator('button[data-nav=more]:visible').click();
   await page.locator('button[data-nav=shopping]:visible').click();
   await page.getByRole('button', { name: 'Complete Rolled oats' }).waitFor();
+  await page.locator('button[data-nav=more]:visible').click();
+  await page.locator('button[data-nav=habits]:visible').click();
+  await page.getByRole('button', { name: 'New habit' }).click();
+  const habitName = `Read a book ${engine.name()}`;
+  await page.getByLabel('Habit name').fill(habitName);
+  await page.getByRole('button', { name: 'Save habit' }).click();
+  const habit = page.locator('article').filter({ hasText: habitName });
+  await habit.getByRole('button', { name: 'Check in today' }).click();
+  await habit.getByText('1-day streak').waitFor();
+
+  await page.locator('button[data-nav=more]:visible').click();
+  await page.locator('button[data-nav=allowance]:visible').click();
+  await page.locator('#allowance-form select[name=memberId]').selectOption({ label: `Child ${engine.name()}` });
+  await page.getByLabel('Amount in USD').fill('5.50');
+  await page.getByLabel('Description').fill(`Weekly allowance ${engine.name()}`);
+  await page.getByRole('button', { name: 'Record entry' }).click();
+  await page.getByText(`Weekly allowance ${engine.name()}`, { exact: true }).waitFor();
+  await page.screenshot({ path: `${artifactDir}/${engine.name()}-allowance.png`, fullPage: true });
+  screenshots.push(`${engine.name()}-allowance.png`);
+
+  await page.locator('button[data-nav=more]:visible').click();
+  await page.locator('button[data-nav=shopping]:visible').click();
+  await page.getByRole('button', { name: 'Complete Rolled oats' }).waitFor();
   await page.waitForFunction(() => !!navigator.serviceWorker.controller);
   await context.setOffline(true);
   await page.getByRole('button', { name: 'Complete Rolled oats' }).click();

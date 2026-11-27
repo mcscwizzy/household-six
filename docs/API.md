@@ -34,6 +34,7 @@ Authenticated reads use `GET`. Writes use a session, CSRF token and a canonical 
 | Rewards | `GET/POST /api/rewards`, `PUT/DELETE /api/rewards/{id}`, `POST /api/rewards/{id}/request`, `POST /api/rewards/redemptions/{id}/review` |
 | Recipes and meals | `GET/POST /api/recipes`, `GET/POST /api/meals`, `PUT/DELETE /api/recipes/{id}` and `/api/meals/{id}`, `POST /api/meals/groceries` |
 | Inventory and announcements | `GET/POST /api/inventory`, `PUT/DELETE /api/inventory/{id}`, `POST /api/inventory/{id}/stock`, `GET/POST /api/announcements`, `PUT/DELETE /api/announcements/{id}`, `POST /api/announcements/{id}/ack` |
+| Habits and allowance | `GET/POST /api/habits`, `PUT/DELETE /api/habits/{id}`, `POST /api/habits/{id}/check`, `GET/POST /api/allowance` |
 | Six | `GET/POST /api/six`, `POST /api/six/{id}/decision` |
 
 The original `/api/items` endpoints are retained for compatible alpha clients. The browser uses the domain-specific routes for new workflows.

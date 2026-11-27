@@ -10,6 +10,7 @@ class DomainError(ValueError):
     def __init__(self, status, message):
         super().__init__(message)
         self.status = status
+        self.public_message = message
 
 
 def statement(connection, sql, **values):

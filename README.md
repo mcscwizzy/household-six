@@ -2,7 +2,7 @@
 
 **Your household. Your hardware. Your data.**
 
-Household Six is an independently developed, self-hosted household organizer. It includes a household calendar, chore and reward approvals, weekly meals and recipes, grocery synchronization, shopping lists, food inventory, announcements and a display mode. Six and private MCP are optional.
+Household Six is an independently developed, self-hosted household organizer. It includes a household calendar, chore and reward approvals, weekly meals and recipes, grocery synchronization, shopping lists, food inventory, announcements, habits, allowance and a display mode. Six and private MCP are optional.
 
 See [implementation status](IMPLEMENTATION_STATUS.md) and the [feature matrix](docs/FEATURE_PARITY.md) for tested workflows and the remaining product backlog.
 

@@ -1,3 +1,4 @@
+import { allowanceView, habitForm, habitsView } from './members-life.js';
 import { announcementsView, announcementForm, wallView } from './announcements.js';
 import { inventoryForm, inventoryView } from './inventory.js';
 import { sixView } from './six.js';
@@ -12,7 +13,7 @@ import { escapeHtml as esc } from './html.js';
 import { clearLegacyCaches, clearQueued, queuedFor, removeQueued, storeQueued } from './offline.js';
 const $=s=>document.querySelector(s);const app=$('#app');
 const SIGNED_OUT = 'hs-explicit-signout';
-const modules={today:['Today','☀️'],calendar:['Calendar','▦'],tasks:['Chores','✓'],meals:['Meals','♨'],more:['More','⌘'],shopping:['Shopping lists','🛒'],recipes:['Recipes','🍲'],inventory:['Pantry & freezer','🥕'],rewards:['Rewards','⭐'],announcements:['Announcements','📌']};
+const modules={today:['Today','☀️'],calendar:['Calendar','▦'],tasks:['Chores','✓'],meals:['Meals','♨'],more:['More','⌘'],shopping:['Shopping lists','🛒'],recipes:['Recipes','🍲'],inventory:['Pantry & freezer','🥕'],rewards:['Rewards','⭐'],announcements:['Announcements','📌'],habits:['Habits','◉'],allowance:['Allowance','$']};
 let me=null,csrf='',screen='today',members=[],items=[],message='',error='',offline=false,authState='signed-out',live=null,quickOpen=false;
 let shoppingData = null;
 let shoppingList = 'default';
@@ -45,11 +46,15 @@ let latestInteraction = 0;
 let queueReplay = null;
 let announcementData = null;
 let showExpired = false;
+let habitsData = null;
+let allowanceData = null;
 
 
 
 
 function resetPrivateViews() {
+  habitsData = null;
+  allowanceData = null;
   announcementData = null;
   showExpired = false;
   inventoryData = null;
@@ -82,7 +87,8 @@ function resetPrivateViews() {
 async function expireLocalSession(){const expiredId=me?.id;if(expiredId)try{await clearQueued(expiredId)}catch{}clearLegacyCaches();resetPrivateViews();me=null;csrf='';members=[];items=[];offline=false;authState='signed-out';if(live){live.close();live=null}renderAuth(false)}
 clearLegacyCaches();
 function formHasDraft(){
-  if (['calendar-form', 'chore-form', 'reward-form', 'meal-form', 'recipe-form','inventory-form','announcement-form'].includes(screen) || document.querySelector('#calendar-import input')?.files?.length) return true;
+  if (['calendar-form', 'chore-form', 'reward-form', 'meal-form', 'recipe-form','inventory-form','announcement-form','habit-form'].includes(screen) || document.querySelector('#calendar-import input')?.files?.length) return true;
+  if (screen === 'allowance' && document.activeElement?.closest('#allowance-form')) return true;
   if (screen === 'inventory' && document.activeElement?.closest('.inventory-stock-form')) return true;
   if (screen === 'six' && document.activeElement?.closest('#six-form')) return true;
   const shoppingForm = document.activeElement?.closest('#shopping-item-form, #shopping-list-form');
@@ -91,13 +97,13 @@ if(!screen.startsWith('new:'))return false;const form=$('#item-form');return !!f
 function setNotice(text,isError=false){message=isError?'':text;error=isError?text:'';render()}
 async function api(path,options={}){const headers={'Content-Type':'application/json',...(options.headers||{})};if(options.method&&options.method!=='GET'&&csrf)headers['X-CSRF-Token']=csrf;return fetch(path,{...options,headers,credentials:'same-origin'})}
 function navButton(id,side=false){const [name,icon]=modules[id];return `<button class="${side?'side-button':'nav-item'} ${screen===id?'active':''}" data-nav="${id}">${side?`<span>${icon}</span><span>${name}</span>`:`<span class="nav-icon">${icon}</span><span>${name==='Shopping lists'?'Lists':name}</span>`}</button>`}
-function shell(content){return `<div class="shell"><aside class="side"><div class="side-brand"><img src="/logo.svg" alt=""><span>Household Six</span></div>${['today','calendar','tasks','meals','more'].map(x=>navButton(x,true)).join('')}<div class="side-spacer"></div><button class="side-button" data-action="theme">◐ <span>Appearance</span></button></aside><header class="topbar"><div class="brand"><img src="/logo.svg" alt=""><span>Household Six</span></div><div class="top-actions"><span class="connection ${offline?'offline':''}">${authState==='offline-authorized'?'Offline authorized · changes pending':'● Local & private'}</span><button class="theme" data-action="theme" aria-label="Toggle appearance">◐</button></div></header><main class="main">${message?`<div class="notice">${esc(message)}</div>`:''}${error?`<div class="notice error">${esc(error)}</div>`:''}${content}<p class="footer-note">Your household. Your hardware. Your data.</p></main><nav class="bottom-nav" aria-label="Main navigation">${['today','calendar','tasks','meals','more'].map(x=>navButton(x)).join('')}</nav>${!['shopping','calendar','calendar-form','chore-form','reward-form','rewards','meal-form','recipe-form','meals','recipes','six','inventory','inventory-form','announcement-form','announcements'].includes(screen)&&canCreateKind(screen==='tasks'?'task':screen==='events'?'event':screen)?'<button class="quick" data-action="add" aria-label="Add item">+</button>':''}${quickOpen?quickMenu():''}</div>`}
+function shell(content){return `<div class="shell"><aside class="side"><div class="side-brand"><img src="/logo.svg" alt=""><span>Household Six</span></div>${['today','calendar','tasks','meals','more'].map(x=>navButton(x,true)).join('')}<div class="side-spacer"></div><button class="side-button" data-action="theme">◐ <span>Appearance</span></button></aside><header class="topbar"><div class="brand"><img src="/logo.svg" alt=""><span>Household Six</span></div><div class="top-actions"><span class="connection ${offline?'offline':''}">${authState==='offline-authorized'?'Offline authorized · changes pending':'● Local & private'}</span><button class="theme" data-action="theme" aria-label="Toggle appearance">◐</button></div></header><main class="main">${message?`<div class="notice">${esc(message)}</div>`:''}${error?`<div class="notice error">${esc(error)}</div>`:''}${content}<p class="footer-note">Your household. Your hardware. Your data.</p></main><nav class="bottom-nav" aria-label="Main navigation">${['today','calendar','tasks','meals','more'].map(x=>navButton(x)).join('')}</nav>${!['shopping','calendar','calendar-form','chore-form','reward-form','rewards','meal-form','recipe-form','meals','recipes','six','inventory','inventory-form','announcement-form','announcements','habit-form','habits','allowance'].includes(screen)&&canCreateKind(screen==='tasks'?'task':screen==='events'?'event':screen)?'<button class="quick" data-action="add" aria-label="Add item">+</button>':''}${quickOpen?quickMenu():''}</div>`}
 function memberChips(balances){return `<div class="member-row">${balances.map(m=>`<div class="member"><span class="avatar color-${avatarColor(m.color)}">${esc(m.display_name.slice(0,1).toUpperCase())}</span>${esc(m.display_name)}${` · ${m.points} pts`}</div>`).join('')}</div>`}
 function avatarColor(color){return ({'#233C32':'forest','#78937D':'sage','#C69A5D':'gold','#54768C':'blue','#9B6B72':'rose','#7B6C9B':'violet'})[color]||'sage'}
 function canCreateKind(kind){if(!me||me.role==='display')return false;if(['owner','admin','adult'].includes(me.role))return true;return me.role==='child'&&['task','shopping'].includes(kind)}
 function quickMenu(){const choices=[['task','Task'],['chore','Chore'],['event','Calendar event'],['shopping','Shopping item'],['meal','Meal'],['inventory','Inventory item'],['recipe','Recipe'],['reward','Reward'],['announcement','Announcement']].filter(([kind])=>canCreateKind(kind === 'chore' ? 'event' : kind));return `<div class="quick-menu card" role="group" aria-label="Quick add">${choices.map(([kind,label])=>`<button class="quick-choice" data-new-kind="${kind}">${label}</button>`).join('')}</div>`}
 function itemCard(item){const who=item.assigned_name||members.find(m=>m.id===item.assigned_to)?.display_name;const completable=['task','shopping'].includes(item.kind);const label={event:'Scheduled',meal:'Planned',inventory:'In stock',recipe:'Saved',reward:'Available',announcement:'Posted'}[item.kind]||'Saved';const control=me.role==='display'?`<span class="badge">${item.completed?'Done':'Read only'}</span>`:completable?`<button class="check ${item.completed?'done':''}" data-complete="${esc(item.id)}" aria-label="${item.completed?'Completed':'Complete'} ${esc(item.title)}">${item.completed?'✓':''}</button>`:`<span class="badge">${item.completed?'Done':label}</span>`;return `<article class="card row item-card ${item.completed?'completed':''}">${control}<div class="item-main"><div class="item-title">${esc(item.title)}</div><div class="item-detail">${esc(item.details||item.due_at||'')}${who?' · '+esc(who):''}</div></div>${item.value?`<span class="badge">⭐ ${item.value}</span>`:''}</article>`}
-function moreView(){const tiles=['shopping','recipes','inventory','rewards','announcements'];return `<div class="greeting"><div><div class="eyebrow">Your family toolkit</div><h1>More</h1><div class="subtle">Everything the household shares.</div></div></div><div class="more-grid">${tiles.map(id=>`<button class="card more-tile" data-nav="${id}"><span class="tile-icon">${modules[id][1]}</span><strong>${modules[id][0]}</strong><span class="item-detail">Open shared ${modules[id][0].toLowerCase()}</span></button>`).join('')}${['owner','admin','adult'].includes(me.role)?'<button class="card more-tile" data-nav="six"><span class="tile-icon">✦</span><strong>Six</strong><span class="item-detail">Local assistant</span></button>':''}<button class="card more-tile" data-nav="members"><span class="tile-icon">👨‍👩‍👧</span><strong>Members</strong><span class="item-detail">Household profiles</span></button><button class="card more-tile" data-nav="wall"><span class="tile-icon">▦</span><strong>Household display</strong><span class="item-detail">Clock and family schedule</span></button><button class="card more-tile" data-nav="settings"><span class="tile-icon">⚙️</span><strong>Settings</strong><span class="item-detail">Account and privacy</span></button></div>`}
+function moreView(){const tiles=['shopping','recipes','inventory','rewards','announcements',...(me.role === 'display' ? [] : ['habits','allowance'])];return `<div class="greeting"><div><div class="eyebrow">Your family toolkit</div><h1>More</h1><div class="subtle">Everything the household shares.</div></div></div><div class="more-grid">${tiles.map(id=>`<button class="card more-tile" data-nav="${id}"><span class="tile-icon">${modules[id][1]}</span><strong>${modules[id][0]}</strong><span class="item-detail">Open shared ${modules[id][0].toLowerCase()}</span></button>`).join('')}${['owner','admin','adult'].includes(me.role)?'<button class="card more-tile" data-nav="six"><span class="tile-icon">✦</span><strong>Six</strong><span class="item-detail">Local assistant</span></button>':''}<button class="card more-tile" data-nav="members"><span class="tile-icon">👨‍👩‍👧</span><strong>Members</strong><span class="item-detail">Household profiles</span></button><button class="card more-tile" data-nav="wall"><span class="tile-icon">▦</span><strong>Household display</strong><span class="item-detail">Clock and family schedule</span></button><button class="card more-tile" data-nav="settings"><span class="tile-icon">⚙️</span><strong>Settings</strong><span class="item-detail">Account and privacy</span></button></div>`}
 function formView(kind){const label={task:'Task',event:'Calendar event',shopping:'Shopping item',meal:'Meal',inventory:'Inventory item',recipe:'Recipe',reward:'Reward',announcement:'Announcement'}[kind]||'Item';return `<div class="greeting"><div><div class="eyebrow">${esc(me.household)}</div><h1>Add ${label.toLowerCase()}</h1><div class="subtle">Your change is saved to your household server.</div></div></div><form class="card form-card form" id="item-form"><label class="field">Title<input name="title" maxlength="120" required autofocus placeholder="${kind==='shopping'?'e.g. Milk':'What would you like to add?'}"></label><label class="field">Notes<textarea name="details" maxlength="1000" placeholder="Add a helpful note (optional)"></textarea></label>${['task','event','meal','inventory'].includes(kind)?`<label class="field">${kind==='event'?'Date and time':'Date'}<input name="dueAt" type="${kind==='event'?'datetime-local':'date'}"></label>`:''}${kind==='task'&&me.role!=='child'?`<label class="field">Assign to<select name="assignedTo"><option value="">Anyone</option>${members.map(m=>`<option value="${esc(m.id)}">${esc(m.display_name)}</option>`).join('')}</select></label><label class="field">Points for completion<input type="number" name="points" min="0" max="10000" value="0"></label>`:''}<div class="actions"><button class="primary" type="submit">Save ${label.toLowerCase()}</button><button class="secondary" type="button" data-nav="${kind==='event'?'calendar':kind==='task'?'tasks':'more'}">Cancel</button></div></form>`}
 function memberView(){return `<div class="greeting"><div><div class="eyebrow">Household profiles</div><h1>Members</h1><div class="subtle">Everyone who shares your household.</div></div></div><div class="list">${members.map(m=>`<div class="card row item-card"><span class="avatar color-${avatarColor(m.color)}">${esc(m.display_name[0])}</span><div class="item-main"><div class="item-title">${esc(m.display_name)}</div><div class="item-detail">${esc(m.role)}</div></div></div>`).join('')}</div>${me.role==='owner'||me.role==='admin'?`<div class="section-head"><h2>Add a member</h2></div><form id="member-form" class="card form"><label class="field">Name<input name="displayName" required></label><label class="field">Username<input name="username" minlength="3" required></label><label class="field">Role<select name="role">${(me.role==='owner'?['admin','adult','child','display']:['adult','child','display']).map(role=>`<option value="${role}">${role==='admin'?'Administrator':role==='child'?'Child profile':role==='display'?'Read-only display':'Adult'}</option>`).join('')}</select></label><label class="field">Member color<select name="color">
   <option value="#78937D">Sage</option><option value="#233C32">Forest</option>
@@ -128,7 +134,10 @@ function render(){if(!me){renderAuth();return}
   :screen==='inventory-form'?inventoryForm(domainDraft, inventoryLocation)
   :screen==='meal-form'?mealForm(domainDraft, recipeData || [], mealDate || householdDate(me.timezone))
   :screen==='recipe-form'?recipeForm(domainDraft):screen==='announcements'?announcementsView(announcementData,me.role,showExpired)
-  :screen==='announcement-form'?announcementForm(domainDraft):screen.startsWith('new:')?formView(screen.slice(4)):'';
+  :screen==='announcement-form'?announcementForm(domainDraft)
+  :screen==='habits'?habitsView(habitsData)
+  :screen==='habit-form'?habitForm(domainDraft, members, canCreateKind('reward'), me.id)
+  :screen==='allowance'?allowanceView(allowanceData, canCreateKind('reward')):screen.startsWith('new:')?formView(screen.slice(4)):'';
 const next = shell(content);
 if (next === renderedMarkup) return;
 renderedMarkup = next;
@@ -160,6 +169,7 @@ async function loadData({ background = false } = {}) {
     ? [`/api/chores?date=${encodeURIComponent(choreDay)}`, '/api/items?kind=task'] : view === 'rewards'
     ? ['/api/rewards'] : view === 'meals' ? [`/api/meals?date=${encodeURIComponent(mealDate)}`]
     : view === 'recipes' ? ['/api/recipes'] : view === 'six' ? ['/api/six']
+    : view === 'habits' ? ['/api/habits'] : view === 'allowance' ? ['/api/allowance']
     : view === 'inventory' ? [`/api/inventory?location=${encodeURIComponent(inventoryLocation)}`] : kinds.map(kind => `/api/items?kind=${kind}`))];
   try {
     const responses = await Promise.all(paths.map(path => api(path)));
@@ -189,6 +199,12 @@ async function loadData({ background = false } = {}) {
       items = [...dashboardData.chores, ...dashboardData.overdue, ...dashboardData.unscheduled];
     } else if (view === 'calendar') {
       calendarData = records[0];
+      items = [];
+    } else if (view === 'habits') {
+      [habitsData] = records;
+      items = [];
+    } else if (view === 'allowance') {
+      [allowanceData] = records;
       items = [];
     } else if (view === 'inventory') {
       [inventoryData] = records;
@@ -716,6 +732,40 @@ setInterval(() => {
     else void loadData();
   }
 }, 30_000);
+
+app.addEventListener('click', event => {
+  const control = event.target.closest('button[data-habit-check],button[data-habit-edit],button[data-habit-archive]');
+  if (!control || !me) return;
+  const actions = control.dataset;
+  if ('habitArchive' in actions && domainDraft?.id && window.confirm('Archive this habit?')) {
+    void saveDomain(`/api/habits/${encodeURIComponent(domainDraft.id)}`, 'DELETE',
+      { expectedVersion: domainDraft.version }, 'Habit archived.', 'habits');
+    return;
+  }
+  const selected = habitsData?.habits.find(item => item.id === (actions.habitCheck || actions.habitEdit));
+  if (!selected) return;
+  if (actions.habitEdit) openDomainForm('habit', selected);
+  else void saveDomain(`/api/habits/${encodeURIComponent(selected.id)}/check`, 'POST',
+    { expectedVersion: selected.version, date: habitsData.date }, 'Habit checked in.');
+});
+
+app.addEventListener('submit', event => {
+  const form = event.target;
+  if (!['habit-form','allowance-form'].includes(form.id)) return;
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(form));
+  if (form.id === 'allowance-form') {
+    const wallet = allowanceData?.wallets.find(entry => entry.id === data.memberId);
+    if (!wallet) return;
+    document.activeElement?.blur();
+    void saveDomain('/api/allowance', 'POST', { ...data, expectedVersion: wallet.version }, 'Allowance recorded.');
+    return;
+  }
+  const id = domainDraft?.id;
+  void saveDomain(id ? `/api/habits/${encodeURIComponent(id)}` : '/api/habits', id ? 'PUT' : 'POST',
+    { ...data, memberId: domainDraft?.member_id || data.memberId || me.id, expectedVersion: domainDraft?.version },
+    'Habit saved.', 'habits');
+});
 
 async function saveShopping(path, method, fields) {
   const memberId = me?.id;
