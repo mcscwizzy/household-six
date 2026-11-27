@@ -1,0 +1,55 @@
+services:
+  household-six:
+    build: .
+    image: household-six:local
+    restart: unless-stopped
+    environment:
+      APP_PORT: 3000
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      DATA_DIR: /app/data
+      BACKUP_DIR: /app/backups
+      SESSION_DAYS: ${SESSION_DAYS:-14}
+      TZ: ${HOUSEHOLD_TIMEZONE:-America/Chicago}
+      HOUSEHOLD_TIMEZONE: ${HOUSEHOLD_TIMEZONE:-America/Chicago}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8088}:3000"
+    volumes:
+      - ${DATA_PATH:-household-six-data}:/app/data
+      - ${BACKUP_PATH:-household-six-backups}:/app/backups
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    networks: [household]
+  caddy:
+    image: caddy:2.9.1-alpine
+    profiles: [caddy]
+    restart: unless-stopped
+    environment:
+      CADDY_HOST: ${CADDY_HOST:-householdsix.home.arpa}
+    ports:
+      - "${CADDY_HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [household]
+networks:
+  household:
+    internal: false
+volumes:
+  caddy_data:
+  caddy_config:
+  household-six-data:
+  household-six-restore-data:
+  household-six-backups:

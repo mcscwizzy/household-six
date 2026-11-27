@@ -1,0 +1,11 @@
+{$CADDY_HOST:householdsix.home.arpa} {
+  tls internal
+  reverse_proxy household-six:3000
+  encode zstd gzip
+  header {
+    X-Content-Type-Options nosniff
+    Referrer-Policy no-referrer
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    Permissions-Policy camera=(), microphone=(), geolocation=()
+  }
+}

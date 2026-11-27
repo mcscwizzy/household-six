@@ -1,0 +1,13 @@
+{
+  "name": "Household Six",
+  "short_name": "Household Six",
+  "description": "Your household. Your hardware. Your data.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f5ef",
+  "theme_color": "#233c32",
+  "icons": [
+    {"src":"/logo.svg","sizes":"any","type":"image/svg+xml","purpose":"any"},
+    {"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"maskable"}
+  ]
+}
