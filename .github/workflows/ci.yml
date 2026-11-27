@@ -1,25 +1,86 @@
-name: CI
+name: Household Six CI
+
 on:
   push:
   pull_request:
-  workflow_dispatch:
+
 permissions:
   contents: read
+  security-events: write
+
 jobs:
-  python-checks:
+  unit-and-static:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
-      - name: Compile service
-        run: python -m compileall -q app tests scripts
-      - name: Run domain and persistence tests
-        run: python -m unittest discover -s tests -v
-  image-build:
+          python-version: "3.12"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - run: python -m pip install --require-hashes -r requirements-optional.lock
+      - run: HOUSEHOLD_SIX_LIVE=1 HOUSEHOLD_SIX_MCP_LIVE=1 python -m unittest discover -s tests -v
+      - run: python -m compileall -q app tests scripts
+      - run: node --check app/static/app.js
+      - run: docker compose config --quiet
+      - run: python -m pip install pip-audit && pip-audit -r requirements-optional.lock --require-hashes
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: python
+      - uses: github/codeql-action/analyze@v4
+
+  compose-integration:
+    runs-on: ubuntu-latest
+    env:
+      HOST_PORT: "18088"
+      CI_RUN_ID: "${{ github.run_id }}-${{ github.run_attempt }}"
+      HOUSEHOLD_SIX_URL: http://127.0.0.1:18088
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: docker compose up -d --build household-six
+      - name: Wait for application health
+        run: curl --fail --retry 30 --retry-delay 2 --retry-all-errors http://127.0.0.1:18088/api/health
+      - name: Create household and persist authenticated completion
+        run: python scripts/compose_smoke.py create
+      - run: docker compose restart household-six
+      - name: Wait after restart
+        run: curl --fail --retry 30 --retry-delay 2 --retry-all-errors http://127.0.0.1:18088/api/health
+      - name: Verify session and data survive restart
+        run: python scripts/compose_smoke.py verify
+      - if: always()
+        run: docker compose down -v
+
+  browser-e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Build container image
-        run: docker build --tag household-six:ci .
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: python -m pip install --require-hashes -r requirements.lock
+      - run: npx playwright install --with-deps chromium webkit
+      - name: Start disposable local app
+        run: |
+          mkdir -p "$RUNNER_TEMP/household-six-e2e"
+          DATA_DIR="$RUNNER_TEMP/household-six-e2e" BIND_ADDRESS=127.0.0.1 APP_PORT=3000 APP_URL=http://127.0.0.1:3000 python -m app.server > "$RUNNER_TEMP/household-six-e2e.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/household-six-e2e.pid"
+      - name: Wait for application health
+        run: curl --fail --retry 30 --retry-delay 2 --retry-all-errors http://127.0.0.1:3000/api/health
+      - name: Run Chromium and WebKit journeys and viewport checks
+        env:
+          HOUSEHOLD_SIX_URL: http://127.0.0.1:3000
+          PLAYWRIGHT_OUTPUT_DIR: artifacts/e2e
+        run: node tests/e2e/core.mjs
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: household-six-browser-screenshots
+          path: artifacts/e2e/*.png

@@ -1,10 +1,22 @@
 # Testing
 
-Run the dependency-free domain tests and Python compilation check:
+Install the runtime dependencies in a Python 3.12 virtual environment before running tests.
 
 ```sh
-python3 -m unittest discover -s tests -v
-python3 -m compileall -q app tests scripts
+python -m pip install --require-hashes -r requirements.lock
+HOUSEHOLD_SIX_LIVE=1 python -m unittest discover -s tests -v
+python -m compileall -q app tests scripts
+npm ci
+npx playwright install --with-deps chromium webkit
 ```
 
-The eight tests cover password hashing, household-scoped query behavior and event fanout, multi-tab CSRF, child/display restrictions in the completion helper, exactly-once points accounting, and backup/restore. The production Docker image built successfully with `docker build`. HTTP tests could not run in this sandbox because creating a local listening socket is denied; `docker run` was rejected by Docker API permissions, and the Compose plugin is unavailable. Browser E2E, screenshots, physical iPhone tests, load tests, vulnerability scans and NAS resource measurements were not run. A sandbox that permits local sockets and container execution should add these checks before deployment.
+Run the browser journeys against a fresh data directory and a loopback HTTP instance.
+
+```sh
+DATA_DIR="$(mktemp -d)" APP_URL=http://127.0.0.1:3000 python -m app.server
+npm run test:e2e
+```
+
+Browser tests create synthetic data and capture PNGs in `artifacts/e2e`. They exercise household screens with Chromium and WebKit, including 320, 375, 390, 430, 768, 1024 and 1440 px viewports. Run them on a disposable application instance.
+
+The Compose smoke script checks the existing session and household data across a restart. Use a disposable Compose project name, named volumes, a loopback port and a unique `CI_RUN_ID`. For local AI and MCP tests see [the AI evaluation](AI_EVALUATION.md) and [the private MCP guide](MCP.md).

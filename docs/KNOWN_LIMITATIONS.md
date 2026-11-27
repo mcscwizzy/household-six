@@ -1,12 +1,10 @@
 # Known limitations
 
-- This is a runnable foundation, not the complete requested family operating system.
-- Implementation uses Python 3.12 standard library and SQLite instead of Next.js/TypeScript, PostgreSQL/Drizzle and pnpm. The registry was unavailable during this run; no dependency installation or compatible-lockfile generation could be performed.
-- Docker daemon access was denied, so Compose build/start, container health and NAS behavior remain unverified.
-- There is no live multi-device event stream. Each view loads from the server when opened.
-- Offline mode is limited to the static shell, locally cached last view, and best-effort queued task/list completion. Browser storage is not encrypted and sensitive records are not implemented.
-- Calendar is a date label plus event list; no recurrence, timezone/DST policy, drag/drop, calendars, iCalendar, CalDAV or provider adapters exist.
-- The application has no file upload, full-text search, attachments, push, maintenance jobs, worker, AI or MCP service.
-- Icons are SVG-only. Dedicated PNG, Apple Touch, 192/512 and maskable raster exports have not been generated.
-- The auth system is a small local implementation and needs independent security review before exposure beyond a trusted household LAN. The login throttle is per process and in-memory.
-- Physical iPhone, iPad, Synology, certificate trust, push, performance and resource consumption were not tested.
+- Calendar imports support daily through yearly recurrence and skipped dates. Recurrence overrides and some advanced iCalendar rules need additional support. CalDAV, external calendar providers and reminder delivery remain on the backlog.
+- Today shows overdue recurring chores from the past 30 days. Older occurrences remain available on the dated chore board. History lists show the most recent entries.
+- The service uses a single Uvicorn process with household-scoped SSE. The browser refetches after reconnecting. Persistent event replay and multi-process delivery remain open.
+- The PWA stores only the static shell and member-keyed completion intents. It requires explicit online authentication after an offline reload. Disconnected devices cannot receive server-side session revocations.
+- Local account administration still needs account disable and reset screens, session management, parent PIN and additional rate-limit coverage.
+- The rest of the product backlog includes maintenance, vehicles, devotional and prayer tracking, document storage, emergency information, budgeting, photos and local notifications. See [feature parity](FEATURE_PARITY.md).
+- Six handles selected local actions and requires approval for writes. Model quality varies by prompt, attachment and hardware. The private MCP server supports scoped stdio reads and an optional grocery proposal.
+- The local restore drill used synthetic data in an isolated volume. Physical Synology, LAN HTTPS, iPhone and iPad installation still need device verification.

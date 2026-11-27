@@ -1,13 +1,24 @@
 # Synology deployment
 
-1. Create a shared folder for the project and persistent data. Keep the data and backups access-controlled.
-2. Copy the repository to the NAS or build the image on a computer with Docker, then transfer it for the NAS CPU architecture (the Python base supports common amd64 and arm64 architectures; verify your device first).
-3. Copy `.env.example` to `.env`. The defaults use named persistent Docker volumes. Set `APP_URL` to the chosen HTTPS URL and pick a free host port.
-4. For Synology Reverse Proxy, set `BIND_ADDRESS=0.0.0.0` and point the proxy to NAS port `HOST_PORT`; preserve Host and HTTPS scheme. Use a trusted certificate.
-5. Or enable the included Caddy profile with `docker compose --profile caddy up -d --build`; configure DNS, use `https://householdsix.home.arpa:8443` by default, and install/trust the Caddy internal CA on devices. If changing the Caddy host port, update `APP_URL` to match.
-6. Start the selected profile, inspect logs and health, then create the owner from a browser on the household LAN.
-7. Do not forward public router ports. Confirm ports are unused before enabling the optional proxy.
+The existing Dockerfile and Compose file still launch the standard-library alpha. The approved FastAPI/Uvicorn runtime migration is incomplete, and Compose cannot be validated in this workspace because the Docker Compose plugin is absent. Do not treat these instructions as NAS verification.
 
-For direct bind mounts, create the host data/backup folders and set ownership/permissions so the container's unprivileged `app` user can write. Named Docker volumes are the working default and avoid guessing NAS UIDs. Compose contains a single application service and optional Caddy; the requested PostgreSQL and worker services are not present because this alpha uses SQLite and has no scheduler.
+## Current alpha setup
 
-This deployment path is documented but not validated against DSM or an actual NAS.
+1. Create a protected local shared folder for the project and persistent data. Do not place the active SQLite database on SMB/NFS.
+2. Copy the repository to the NAS or build the image on a compatible amd64/arm64 machine.
+3. Copy `.env.example` to `.env`; set `APP_URL` to the trusted HTTPS URL and choose an unused host port. The checked-in runtime does not yet consume the AI/MCP options in the example.
+4. For Synology Reverse Proxy, use a trusted certificate, set `BIND_ADDRESS=0.0.0.0`, and route to `HOST_PORT`. Preserve the original Host and HTTPS scheme.
+5. Or configure local DNS for `householdsix.home.arpa` and use the optional Caddy profile. Trust its internal certificate only on household devices, as described in [LOCAL_HTTPS.md](LOCAL_HTTPS.md).
+6. Start with `docker compose up -d --build`, inspect health and logs, then create the first household on the local network.
+7. Do not forward public router ports. Do not modify firewall settings automatically.
+
+Defaults bind the app to loopback and use persistent Docker volumes. Keep the NAS installation restricted to trusted local ingress. The current alpha offers SQLite backup/restore scripts; uploaded files/configuration are not part of backups because those modules do not exist yet.
+
+## Required verification before household deployment
+
+- Run the Compose CI test against the actual Compose version and confirm health, authenticated create/complete operations, and data persistence after restart.
+- Restore a backup into a disposable empty volume and verify IDs, sessions, items and ledger integrity before switching any live path.
+- Verify the actual NAS model, local filesystem, HTTPS certificate trust, architecture and memory/CPU limits.
+- Keep an independent protected backup and the prior app image/database until the upgrade is accepted.
+
+No DSM/NAS, physical iPhone/iPad, local DNS or trusted certificate verification is claimed.

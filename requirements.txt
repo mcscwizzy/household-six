@@ -1,0 +1,7 @@
+# Core dependency inputs. Install the verified transitive pins from requirements.lock.
+fastapi==0.165.0
+uvicorn==0.54.0
+SQLAlchemy==2.0.58
+alembic==1.20.1
+icalendar==7.3.2
+python-dateutil==4.0.0

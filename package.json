@@ -1,0 +1,10 @@
+{
+  "name": "household-six-browser-checks",
+  "private": true,
+  "scripts": {
+    "test:e2e": "node tests/e2e/core.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.65.1"
+  }
+}

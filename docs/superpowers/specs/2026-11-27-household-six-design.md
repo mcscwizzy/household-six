@@ -1,5 +1,7 @@
 # Household Six Design
 
+> **Superseded historical design:** This initial proposal chose TypeScript/PostgreSQL. The user's continuation request explicitly approved Python/FastAPI/SQLite/SQLAlchemy/Alembic instead; see [ADR 0001](../../adr/0001-approved-runtime-and-data-store.md) and [active requirements](../../REQUIREMENTS.md). Retain this file as the record of the earlier decision only.
+
 ## Intent
 
 Build a private, self-hosted household organizer for an iPhone-first family. The local server remains authoritative, data stays in PostgreSQL and local file storage, and core workflows do not depend on AI or cloud services.

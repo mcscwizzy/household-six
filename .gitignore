@@ -228,3 +228,6 @@ data/
 *.sqlite3-shm
 *.sqlite3-wal
 .DS_Store
+
+node_modules/
+artifacts/

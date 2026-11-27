@@ -1,5 +1,7 @@
 # Household Six Implementation Plan
 
+> **Superseded historical plan:** This initial proposal selected Next.js/PostgreSQL. The active continuation architecture is Python/FastAPI/SQLite/SQLAlchemy/Alembic under the user's later request; see [ADR 0001](../../adr/0001-approved-runtime-and-data-store.md), [active requirements](../../REQUIREMENTS.md), and [current implementation status](../../../IMPLEMENTATION_STATUS.md). Tasks below are historical and are not evidence of delivered features.
+
 > **For agentic workers:** Implement the application task-by-task, preserving the project scope and tracking gaps.
 
 **Goal:** Ship a self-hostable, authenticated family organizer with real persistence, usable responsive PWA surfaces, and deployment documentation.

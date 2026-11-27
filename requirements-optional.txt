@@ -1,0 +1,2 @@
+# Optional local interoperability. MCP remains disabled unless explicitly configured.
+mcp==2.3.0

@@ -2,17 +2,19 @@
 
 **Your household. Your hardware. Your data.**
 
-Household Six is an independently developed, self-hosted household organizer. This repository currently contains an early, runnable private alpha with local authentication, household-scoped SQLite persistence, a responsive installable web shell, and working shared lists for tasks, events, meals, shopping, recipes, inventory, rewards, and announcements.
+Household Six is an independently developed, self-hosted household organizer. It includes a household calendar, chore and reward approvals, weekly meals and recipes, grocery synchronization, shopping lists, food inventory, announcements, habits, allowance and a display mode. Six and private MCP are optional.
 
-This is not a completed substitute for every feature in Skylight Calendar. The implementation status and platform limits are in [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) and [docs/FEATURE_PARITY.md](docs/FEATURE_PARITY.md).
+See [implementation status](IMPLEMENTATION_STATUS.md) and the [feature matrix](docs/FEATURE_PARITY.md) for tested workflows and the remaining product backlog.
 
 ## Run locally
 
-Requires Python 3.12 or newer. No Python packages are required.
+Requires Python 3.12 and the locked runtime dependencies.
 
 ```sh
-mkdir -p data
-BIND_ADDRESS=127.0.0.1 APP_URL=http://localhost:3000 APP_PORT=3000 DATA_DIR=./data python3 -m app.server
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --require-hashes -r requirements.lock
+APP_URL=http://localhost:3000 python -m app.server
 ```
 
 Visit <http://localhost:3000>. First-run setup creates the local owner. Use a unique password of at least 12 characters. For LAN use, put the app behind trusted HTTPS; do not expose the plain HTTP service to an untrusted network.
@@ -20,12 +22,10 @@ Visit <http://localhost:3000>. First-run setup creates the local owner. Use a un
 ## Docker Compose
 
 ```sh
-cp .env.example .env
-mkdir -p data
-docker compose up -d --build
+APP_URL=http://localhost:8088 docker compose up -d --build household-six
 ```
 
-By default, Compose binds the app to `127.0.0.1:8088` and stores data in persistent Docker volumes. For the included local HTTPS proxy, set up local DNS for `householdsix.home.arpa`, then run:
+Open <http://localhost:8088> on the host. By default, Compose binds the app to `127.0.0.1:8088` and stores data in persistent Docker volumes. For the included local HTTPS proxy, set up local DNS for `householdsix.home.arpa`, then run:
 
 ```sh
 docker compose --profile caddy up -d --build
@@ -63,10 +63,13 @@ After validating the restored volume, set `DATA_PATH=household-six-restore-data`
 ```sh
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q app tests scripts
+node --check app/static/app.js
 ```
 
 ## Architecture note
 
-The specification prefers Next.js, PostgreSQL, Drizzle, and pnpm. The execution environment cannot resolve `registry.npmjs.org`, so installing or verifying that dependency stack is not possible here. To produce a runnable application without external packages, this initial implementation uses Python 3.12's standard library and SQLite. This is a material engineering deviation: SQLite can serve a small private household, but it is not the specified PostgreSQL deployment and needs further multi-device/load validation before a production recommendation. There is no AI, MCP, worker, Web Push, CalDAV, or provider integration in this alpha.
+Uvicorn serves the FastAPI application. SQLAlchemy configures local SQLite connections with WAL, and Alembic applies the original additive migrations and tracks new ones. Set `DATA_PATH` to a volume backed by local NAS storage.
 
-See [known limitations](docs/KNOWN_LIMITATIONS.md) and [architecture](docs/ARCHITECTURE.md).
+`requirements.lock` pins and hashes the runtime dependency tree for Python 3.12. `requirements-optional.lock` also includes the MCP SDK. Browser test dependencies are installed with `npm ci`. Set `HOUSEHOLD_SIX_LIVE=1` when running the test suite on a machine that can bind a loopback socket.
+
+See [implementation status](IMPLEMENTATION_STATUS.md), [known limitations](docs/KNOWN_LIMITATIONS.md), [architecture](docs/ARCHITECTURE.md), and [ADR 0001](docs/adr/0001-approved-runtime-and-data-store.md).

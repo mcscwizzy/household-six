@@ -1,32 +1,41 @@
 # Architecture
 
-```mermaid
-flowchart LR
-  Phone[Phone / tablet / desktop browser] -->|same-origin HTTP; use trusted HTTPS on LAN| App[Python standard-library app]
-  App --> SQLite[(SQLite WAL database on persistent NAS volume)]
-  Browser -->|cached static shell and view data| PWA[Service worker + localStorage]
-  App -.->|household-scoped SSE| Phone
-  Proxy[Optional Caddy or Synology proxy] --> App
-  Backup[Timestamped backup script] --> SQLite
-```
+## Approved target
 
-The app is a single process and a single database file. It is intentionally modest for a private alpha. The server is authoritative; browser cache is a convenience and can be cleared. Task completion is transactional and the points ledger has a uniqueness constraint to prevent duplicate awards.
+Household Six is a single-process, local-first modular monolith. The approved continuation stack is Python 3.12+, FastAPI and Uvicorn, SQLite in WAL mode, SQLAlchemy, Alembic, modular JavaScript, IndexedDB for minimal offline mutation intents, and household-scoped Server-Sent Events. Ollama and the Python MCP SDK are optional and disabled by default. Docker Compose is the NAS deployment boundary. The core must run without AI, MCP, internet access or external identity.
 
-The user-requested architecture uses Next.js, PostgreSQL and Drizzle. Network access to npm was unavailable during initialization, and a dependency-based app could not be installed or tested. Python's standard library and SQLite were selected for a usable no-package baseline, not as a claim of equivalence. A future migration should preserve the service API and household scoping while moving records to Postgres and adding the specified worker, validation library and typed client.
+The project does not use PostgreSQL, Redis, Kubernetes, hosted infrastructure or a separate parallel application architecture. Never put the active SQLite database on SMB or NFS storage.
 
-## Request flow
+## Current implementation
+
+FastAPI serves the UI and API through Uvicorn. SQLAlchemy provides configured SQLite connections and domain queries. Alembic adopts the existing alpha migration ledger and applies additive migrations in a single SQLite write transaction. The legacy item and authentication queries retain SQLite DB-API behavior on the same engine.
+
+The application boundary is a single local SQLite file in WAL mode. Repository migrations preserve alpha IDs, timestamps, memberships, hashes, assignments and ledger entries. The upgrade tests run on synthetic alpha records.
+
+## Data and trust boundaries
+
+- SQLite is authoritative. Every query and mutation must be scoped by the authenticated household on the server.
+- The browser is untrusted. Offline storage holds no household records. IndexedDB may hold only a member-keyed completion intent with expected version, unique mutation ID and bounded retry metadata.
+- Offline intents are never loaded before the same member authenticates online. Offline reload is signed out. Browser storage is not encrypted and client state cannot guarantee revocation while disconnected.
+- HTTP, UI, AI, MCP and jobs must call the same application services for equivalent authorization and business rules.
+- SSE is currently process-local and has no durable replay. Keep deployment single-process until shared event delivery is implemented.
+
+## Current request flow
 
 ```mermaid
 sequenceDiagram
-  participant U as Household member
-  participant W as Browser UI
-  participant S as Local service
-  participant D as SQLite
-  U->>W: Complete assigned task
-  W->>S: POST /api/items/{id}/complete + session + CSRF
-  S->>D: Begin immediate transaction; scope item by household
-  S->>D: Mark complete and insert unique ledger entry
-  D-->>S: Commit once
-  S-->>W: Updated item and version
-  W-->>U: Show completed state
+  participant M as Household member
+  participant B as Browser PWA
+  participant S as FastAPI
+  participant D as SQLite WAL
+  M->>B: Complete an eligible task
+  B->>S: POST with session, CSRF, expected version and mutation ID
+  S->>D: Scope by household; check role and version in a short write transaction
+  D-->>S: Commit result and unique mutation receipt
+  S-->>B: 200, or typed 401/403/404/409/422 response
+  B-->>M: Confirm, revert or reconcile state
 ```
+
+## Modules
+
+`app/server.py` owns HTTP routing, response security and the original session API. Separate Python modules own calendar, chores, rewards, meals, shopping, inventory, announcements, assistant jobs and MCP. Browser modules in `app/static` render those domains. `app/database.py` configures SQLite, and `app/db_migrations` contains the Alembic revisions.
