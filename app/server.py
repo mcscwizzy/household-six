@@ -24,7 +24,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 
-from app import database
+from app import calendar_service, dashboard, database, shopping
+from app.mutations import DomainError
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("DATA_DIR", ROOT / "data"))
@@ -190,11 +191,11 @@ def list_items(con, household_id, kind):
     return con.execute("""SELECT i.id,i.kind,i.title,i.details,i.due_at,i.assigned_to,i.completed,i.value,i.version,i.created_at,
         u.display_name assigned_name,u.color assigned_color
         FROM items i LEFT JOIN users u ON u.id=i.assigned_to AND u.household_id=i.household_id
-        WHERE i.household_id=? AND i.kind=? ORDER BY i.completed,COALESCE(i.due_at,i.created_at),i.created_at DESC LIMIT 250""", (household_id, kind)).fetchall()
+        WHERE i.household_id=? AND i.kind=? AND i.deleted_at IS NULL ORDER BY i.completed,COALESCE(i.due_at,i.created_at),i.created_at DESC LIMIT 250""", (household_id, kind)).fetchall()
 
 
 def complete_item(con, iid, household_id, actor_id, role, expected_version=None):
-    item = con.execute("SELECT * FROM items WHERE id=? AND household_id=?", (iid, household_id)).fetchone()
+    item = con.execute("SELECT * FROM items WHERE id=? AND household_id=? AND deleted_at IS NULL", (iid, household_id)).fetchone()
     if not item:
         return None
     if item["kind"] not in {"task", "shopping"}:
@@ -223,12 +224,12 @@ class RequestContext:
     def json(status, data, extra_headers=None):
         return JSONResponse(data, status_code=status, headers=extra_headers)
 
-    async def body(self):
+    async def body(self, limit=32768):
         if self.headers.get("Transfer-Encoding"):
             raise HTTPException(400, "Transfer-encoded requests are not supported.")
         data = bytearray()
         async for chunk in self.request.stream():
-            if len(data) + len(chunk) > 32768:
+            if len(data) + len(chunk) > limit:
                 raise HTTPException(413, "Request is too large.")
             data.extend(chunk)
         try:
@@ -294,7 +295,7 @@ class RequestContext:
                 return self.json(200, {"items": [dict(r) for r in rows]})
             if path == "/api/summary":
                 with connect() as con:
-                    rows = con.execute("SELECT kind,COUNT(*) total,SUM(CASE WHEN completed=0 THEN 1 ELSE 0 END) open FROM items WHERE household_id=? GROUP BY kind", (user["household_id"],)).fetchall()
+                    rows = con.execute("SELECT kind,COUNT(*) total,SUM(CASE WHEN completed=0 THEN 1 ELSE 0 END) open FROM items WHERE household_id=? AND deleted_at IS NULL GROUP BY kind", (user["household_id"],)).fetchall()
                     balances = con.execute("SELECT member_id,SUM(amount) balance FROM points_ledger WHERE household_id=? GROUP BY member_id", (user["household_id"],)).fetchall()
                     members = con.execute("SELECT id,display_name,role,color FROM users WHERE household_id=?", (user["household_id"],)).fetchall()
                 return self.json(200, {"counts": {r["kind"]: {"total": r["total"], "open": r["open"]} for r in rows}, "members": [dict(m, points=next((b["balance"] for b in balances if b["member_id"] == m["id"]), 0)) for m in members]})
@@ -522,7 +523,7 @@ class RequestContext:
                 if receipt["actor_id"] != user["id"] or receipt["operation"] != "item.complete" or receipt["entity_id"] != iid:
                     con.rollback()
                     return self.json(409, {"error": "This queued change conflicts with another operation."})
-                current = con.execute("SELECT id,kind,title,details,due_at,assigned_to,completed,value,version FROM items WHERE id=? AND household_id=?", (iid,user["household_id"])).fetchone()
+                current = con.execute("SELECT id,kind,title,details,due_at,assigned_to,completed,value,version FROM items WHERE id=? AND household_id=? AND deleted_at IS NULL", (iid,user["household_id"])).fetchone()
                 if not current:
                     con.rollback()
                     return self.json(404, {"error": "That household item was not found."})
@@ -571,7 +572,10 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 
 @app.middleware("http")
 async def security_headers(request, call_next):
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        response = JSONResponse({"error": "Request could not be completed.", "requestId": new_id()}, status_code=500)
     response.headers.setdefault("Cache-Control", "no-store")
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -611,10 +615,101 @@ for path in ("/setup", "/login", "/logout", "/items", "/items/{item_id}/complete
     app.add_api_route("/api" + path, write_api, methods=["POST"])
 
 
+def authorized(context, *, mutation=None):
+    user = context.auth()
+    if not user:
+        raise DomainError(401, "Sign in to continue.")
+    if mutation is not None:
+        if user["role"] == "display":
+            raise DomainError(403, "This read-only display cannot change household data.")
+        if not context.csrf_ok(mutation.get("csrf")):
+            raise DomainError(403, "Refresh the page and try again.")
+    return user
+
+
+@app.exception_handler(DomainError)
+async def domain_error(_, error):
+    return JSONResponse({"error": str(error)}, status_code=error.status)
+
+
+@app.get("/api/shopping")
+def shopping_read(request: Request, list: str = "default"):
+    user = authorized(RequestContext(request))
+    return shopping.load(database.engine(DB_PATH), user, list)
+
+
+async def domain_write(request, service, kind, *, limit=32768):
+    context = RequestContext(request)
+    if not context.origin_ok():
+        raise DomainError(403, "Request origin was not accepted.")
+    data = await context.body(limit)
+    operation = request.scope["route"].name
+    target = request.path_params.get("target")
+
+    def save():
+        user = authorized(context, mutation=data)
+        status, result, entity = service.write(database.engine(DB_PATH), user, operation, target, data)
+        if entity:
+            EVENTS.publish(user["household_id"], {"kind": kind, "id": entity, "action": operation})
+        return Response(status_code=204) if status == 204 else JSONResponse(result, status_code=status)
+
+    return await run_in_threadpool(save)
+
+
+async def shopping_write(request: Request):
+    return await domain_write(request, shopping, "shopping")
+
+
+for path, method, operation in (
+    ("/lists", "POST", "shopping.list.create"),
+    ("/lists/{target}/items", "POST", "shopping.item.create"),
+    ("/items/{target}", "PUT", "shopping.item.update"),
+    ("/items/{target}", "DELETE", "shopping.item.delete"),
+):
+    app.add_api_route("/api/shopping" + path, shopping_write, methods=[method], name=operation)
+
+
+@app.get("/api/calendar")
+def calendar_read(request: Request, member: str | None = None):
+    user = authorized(RequestContext(request))
+    query = request.query_params
+    return calendar_service.load(database.engine(DB_PATH), user, query.get("from"), query.get("to"), member)
+
+
+@app.get("/api/calendar/export")
+def calendar_export(request: Request):
+    user = authorized(RequestContext(request))
+    return Response(calendar_service.export_ics(database.engine(DB_PATH), user), media_type="text/calendar",
+                    headers={"Content-Disposition": 'attachment; filename="household-six.ics"'})
+
+
+async def calendar_write(request: Request):
+    limit = 256_000 if request.scope["route"].name == "calendar.import" else 32_768
+    return await domain_write(request, calendar_service, "event", limit=limit)
+
+
+for path, method, operation in (
+    ("", "POST", "calendar.create"),
+    ("/import", "POST", "calendar.import"),
+    ("/{target}", "PUT", "calendar.update"),
+    ("/{target}", "DELETE", "calendar.delete"),
+):
+    app.add_api_route("/api/calendar" + path, calendar_write, methods=[method], name=operation)
+
+
+@app.get("/api/dashboard")
+def dashboard_read(request: Request):
+    user = authorized(RequestContext(request))
+    return dashboard.load(database.engine(DB_PATH), user)
+
+
 STATIC_FILES = {
-    "index.html": "text/html", "app.js": "text/javascript", "offline.js": "text/javascript", "style.css": "text/css",
+    "index.html": "text/html", "app.js": "text/javascript", "offline.js": "text/javascript",
+    "shopping.js": "text/javascript", "html.js": "text/javascript",
+    "calendar.js": "text/javascript", "dashboard.js": "text/javascript", "dates.js": "text/javascript", "style.css": "text/css",
     "manifest.webmanifest": "application/manifest+json", "sw.js": "text/javascript",
     "logo.svg": "image/svg+xml", "icon.svg": "image/svg+xml",
+    **dict.fromkeys(("apple-touch-icon.png", "pwa-192.png", "pwa-512.png", "pwa-maskable-512.png"), "image/png"),
 }
 
 
