@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import hashlib
-import hmac
 import json
 import os
 import queue
@@ -24,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 
-from app import allowance, announcements, assistant, calendar_service, chores, dashboard, database, habits, inventory, meals, rewards, shopping
+from app import accounts, allowance, announcements, assistant, calendar_service, chores, dashboard, database, habits, inventory, meals, permissions, property_care, rewards, security, shopping
 from app.mutations import DomainError, Mutation, row, statement
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -83,7 +82,7 @@ class ConflictError(Exception):
 
 def can_create_member(actor_role, target_role):
     """Keep administrator creation and all member management owner-controlled."""
-    if target_role == "owner":
+    if target_role == "owner" or not permissions.allowed(actor_role, "members.manage"):
         return False
     if actor_role == "owner":
         return target_role in {"admin", "adult", "child", "display"}
@@ -93,11 +92,16 @@ def can_create_member(actor_role, target_role):
 
 
 def can_create_item(actor_role, kind):
-    if kind not in KINDS or actor_role == "display":
+    if kind not in KINDS:
         return False
-    if actor_role == "child":
-        return kind in {"task", "shopping"}
-    return actor_role in PRIVILEGED
+    if kind == "task" and actor_role == "child":
+        return permissions.allowed(actor_role, "task.create.self")
+    action = {
+        "event": "calendar.write", "task": "chores.manage", "shopping": "shopping.write",
+        "meal": "meals.manage", "inventory": "inventory.manage", "recipe": "meals.manage",
+        "announcement": "announcements.manage", "reward": "rewards.manage",
+    }[kind]
+    return permissions.allowed(actor_role, action)
 
 
 def valid_mutation_id(value):
@@ -147,18 +151,11 @@ def new_id():
 
 
 def pw_hash(password, salt=None):
-    salt = salt or secrets.token_bytes(16)
-    derived = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
-    return salt.hex() + "." + derived.hex()
+    return security.hash_password(password, salt)
 
 
 def verify_password(password, encoded):
-    try:
-        salt_hex, want = encoded.split(".", 1)
-        got = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex), n=2**14, r=8, p=1, dklen=32).hex()
-        return hmac.compare_digest(got, want)
-    except (ValueError, TypeError):
-        return False
+    return security.verify_password(password, encoded)
 
 
 def digest(value):
@@ -181,7 +178,8 @@ def valid_csrf(con, session_id_hash, token):
 def lookup_session(con, session_hash, now=None):
     """Resolve only unexpired sessions belonging to enabled accounts."""
     now = now or datetime.now(timezone.utc).isoformat()
-    return con.execute("""SELECT s.id_hash,s.csrf_hash,u.id,u.household_id,u.username,u.display_name,u.role,u.color,
+    return con.execute("""SELECT s.id_hash,s.device_id,s.csrf_hash,u.id,u.household_id,u.username,u.display_name,u.role,u.color,
+        u.avatar_key,u.managed_profile,
         h.name household_name,h.timezone
         FROM sessions s JOIN users u ON u.id=s.user_id JOIN households h ON h.id=u.household_id
         WHERE s.id_hash=? AND s.expires_at>? AND u.disabled_at IS NULL""", (session_hash, now)).fetchone()
@@ -288,13 +286,26 @@ class RequestContext:
             if not user:
                 return self.json(401, {"error": "Sign in to continue."})
             if path == "/api/members":
+                require_permission(user, "members.read")
+                show_disabled = permissions.allowed(user["role"], "members.access.manage")
+                disabled_clause = "" if show_disabled else " AND disabled_at IS NULL"
                 with connect() as con:
-                    rows = con.execute("SELECT id,display_name,role,color FROM users WHERE household_id=? ORDER BY created_at", (user["household_id"],)).fetchall()
+                    rows = con.execute("SELECT id,display_name,role,color,avatar_key,disabled_at FROM users WHERE household_id=?" + disabled_clause + " ORDER BY created_at", (user["household_id"],)).fetchall()
                 return self.json(200, {"members": [dict(r) for r in rows]})
+            if path == "/api/sessions":
+                target_id = self.request.path_params.get("target_id")
+                return self.json(200, {"sessions": accounts.list_sessions(
+                    database.engine(DB_PATH), user, current_id=user["device_id"]
+                )})
             if path == "/api/items":
                 kind = self.request.query_params.get("kind", "")
                 if kind not in KINDS:
                     return self.json(400, {"error": "Choose a supported household list."})
+                require_permission(user, {
+                    "event": "calendar.read", "task": "chores.read", "shopping": "shopping.read",
+                    "meal": "meals.read", "inventory": "inventory.read", "recipe": "meals.read",
+                    "announcement": "announcements.read", "reward": "rewards.read",
+                }[kind])
                 with connect() as con:
                     rows = list_items(con, user["household_id"], kind, announcements.current_day(user))
                 return self.json(200, {"items": [dict(r) for r in rows]})
@@ -307,11 +318,13 @@ class RequestContext:
             if path == "/api/events":
                 return self.event_stream(user)
             return self.json(404, {"error": "Page not found."})
+        except DomainError as exc:
+            return self.json(exc.status, {"error": exc.public_message})
         except Exception:
             return self.json(500, {"error": "Request could not be completed.", "requestId": new_id()})
 
     def user_json(self, user):
-        return {"id": user["id"], "username": user["username"], "displayName": user["display_name"], "role": user["role"], "color": user["color"], "household": user["household_name"], "timezone": user["timezone"]}
+        return {"id": user["id"], "username": user["username"], "displayName": user["display_name"], "role": user["role"], "color": user["color"], "avatar": user["avatar_key"], "household": user["household_name"], "timezone": user["timezone"]}
 
     def event_stream(self, user):
         household_id = user["household_id"]
@@ -348,6 +361,7 @@ class RequestContext:
 
     def write(self, data):
         path = self.request.url.path
+        operation = self.request.scope["route"].name
         try:
             if path == "/api/setup":
                 return self.setup(data)
@@ -372,6 +386,33 @@ class RequestContext:
                 return self.complete_item(user, self.request.path_params["item_id"], data)
             if path == "/api/members":
                 return self.create_member(user, data)
+            if operation == "members.profile.update":
+                result = accounts.update_profile(database.engine(DB_PATH), user,
+                                                 data.get("targetId"),
+                                                 {key: value for key, value in data.items() if key != "targetId"})
+                EVENTS.publish(user["household_id"], {"kind": "member", "action": "profile.updated"})
+                return self.json(200, result)
+            if operation == "members.status.update":
+                result = accounts.set_disabled(database.engine(DB_PATH), user,
+                                               data.get("targetId"), data.get("disabled"))
+                EVENTS.publish(user["household_id"], {"kind": "member", "action": "status.updated"})
+                return self.json(200, result)
+            if operation == "members.password.reset":
+                result = accounts.reset_password(database.engine(DB_PATH), user,
+                                                 data.get("targetId"), data.get("newPassword"))
+                EVENTS.publish(user["household_id"], {"kind": "member", "action": "password.reset"})
+                return self.json(200, result)
+            if operation == "sessions.revoke":
+                result = accounts.revoke_session(database.engine(DB_PATH), user,
+                                                 data.get("deviceId"), user["device_id"])
+                response = self.json(200, result)
+                if result["current"]:
+                    response.delete_cookie(COOKIE, httponly=True, samesite="strict", secure=secure_cookie())
+                return response
+            if operation == "sessions.list.household":
+                result = accounts.list_sessions(database.engine(DB_PATH), user,
+                                                target_id=data.get("targetId"), current_id=user["device_id"])
+                return self.json(200, {"sessions": result})
             if path == "/api/password":
                 return self.change_password(user, data)
             return self.json(404, {"error": "That action is not available."})
@@ -432,7 +473,7 @@ class RequestContext:
         token, csrf = secrets.token_urlsafe(36), secrets.token_urlsafe(32)
         expiry = datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)
         with connect() as con:
-            con.execute("INSERT INTO sessions(id_hash,user_id,csrf_hash,expires_at) VALUES(?,?,?,?)", (digest(token),uid,digest(csrf),expiry.isoformat()))
+            con.execute("INSERT INTO sessions(id_hash,device_id,user_id,csrf_hash,expires_at) VALUES(?,?,?,?,?)", (digest(token),new_id(),uid,digest(csrf),expiry.isoformat()))
             store_csrf(con,digest(token),csrf)
             user = con.execute("SELECT u.*,h.name household_name,h.timezone FROM users u JOIN households h ON h.id=u.household_id WHERE u.id=?", (uid,)).fetchone()
             con.execute("INSERT INTO audit_log(id,household_id,actor_id,action) VALUES(?,?,?,'session.login')", (new_id(),user["household_id"],uid))
@@ -649,11 +690,16 @@ async def write_api(request: Request):
     return await run_in_threadpool(context.write, data)
 
 
-for path in ("/health", "/setup-state", "/me", "/members", "/items", "/summary", "/events"):
+for path in ("/health", "/setup-state", "/me", "/members", "/items", "/summary", "/events", "/sessions"):
     app.add_api_route("/api" + path, read_api, methods=["GET"])
 
 for path in ("/setup", "/login", "/logout", "/items", "/items/{item_id}/complete", "/members", "/password"):
     app.add_api_route("/api" + path, write_api, methods=["POST"])
+app.add_api_route("/api/members/profile", write_api, methods=["PUT"], name="members.profile.update")
+app.add_api_route("/api/members/status", write_api, methods=["POST"], name="members.status.update")
+app.add_api_route("/api/members/password/reset", write_api, methods=["POST"], name="members.password.reset")
+app.add_api_route("/api/sessions/revoke", write_api, methods=["POST"], name="sessions.revoke")
+app.add_api_route("/api/sessions/list", write_api, methods=["POST"], name="sessions.list.household")
 
 
 def authorized(context, *, mutation=None):
@@ -668,6 +714,47 @@ def authorized(context, *, mutation=None):
     return user
 
 
+def require_permission(user, permission):
+    if not permissions.allowed(user["role"], permission):
+        raise DomainError(403, "This account cannot access that household information.")
+
+
+def write_permission(operation, role):
+    if operation.startswith("calendar."):
+        return "calendar.write"
+    if operation == "chore.complete":
+        return "chore.complete.assigned" if role == "child" else "chores.manage"
+    if operation.startswith("chore."):
+        return "chores.manage"
+    if operation.startswith("shopping."):
+        return "shopping.write"
+    if operation == "reward.request":
+        return "reward.request"
+    if operation.startswith("reward."):
+        return "rewards.manage"
+    if operation == "announcement.ack":
+        return "announcements.read"
+    if operation.startswith("announcement."):
+        return "announcements.manage"
+    if operation == "habit.check":
+        return "habit.check.self"
+    if operation.startswith("habit."):
+        return "habit.manage.self" if role == "child" else "habits.manage"
+    if operation.startswith("allowance."):
+        return "allowance.manage"
+    if operation.startswith("inventory."):
+        return "inventory.manage"
+    if operation.startswith("maintenance."):
+        return "maintenance.manage"
+    if operation.startswith("vehicle."):
+        return "vehicles.manage"
+    if operation.startswith("meal.") or operation.startswith("recipe."):
+        return "meals.manage"
+    if operation.startswith("six."):
+        return "assistant.use"
+    return None
+
+
 @app.exception_handler(DomainError)
 async def domain_error(_, error):
     return JSONResponse({"error": error.public_message}, status_code=error.status)
@@ -676,6 +763,7 @@ async def domain_error(_, error):
 @app.get("/api/shopping")
 def shopping_read(request: Request, list: str = "default"):
     user = authorized(RequestContext(request))
+    require_permission(user, "shopping.read")
     return shopping.load(database.engine(DB_PATH), user, list)
 
 
@@ -689,6 +777,9 @@ async def domain_write(request, service, kind, *, limit=32768):
 
     def save():
         user = authorized(context, mutation=data)
+        permission = write_permission(operation, user["role"])
+        if permission:
+            require_permission(user, permission)
         status, result, entity = service.write(database.engine(DB_PATH), user, operation, target, data)
         if entity:
             EVENTS.publish(user["household_id"], {"kind": kind, "id": entity, "action": operation})
@@ -713,6 +804,7 @@ for path, method, operation in (
 @app.get("/api/calendar")
 def calendar_read(request: Request, member: str | None = None):
     user = authorized(RequestContext(request))
+    require_permission(user, "calendar.read")
     query = request.query_params
     return calendar_service.load(database.engine(DB_PATH), user, query.get("from"), query.get("to"), member)
 
@@ -720,6 +812,7 @@ def calendar_read(request: Request, member: str | None = None):
 @app.get("/api/calendar/export")
 def calendar_export(request: Request):
     user = authorized(RequestContext(request))
+    require_permission(user, "calendar.read")
     return Response(calendar_service.export_ics(database.engine(DB_PATH), user), media_type="text/calendar",
                     headers={"Content-Disposition": 'attachment; filename="household-six.ics"'})
 
@@ -741,18 +834,21 @@ for path, method, operation in (
 @app.get("/api/dashboard")
 def dashboard_read(request: Request):
     user = authorized(RequestContext(request))
+    require_permission(user, "display.read")
     return dashboard.load(database.engine(DB_PATH), user)
 
 
 @app.get("/api/chores")
 def chores_read(request: Request, date: str | None = None):
     user = authorized(RequestContext(request))
+    require_permission(user, "chores.read")
     return chores.load(database.engine(DB_PATH), user, date)
 
 
 @app.get("/api/rewards")
 def rewards_read(request: Request):
     user = authorized(RequestContext(request))
+    require_permission(user, "rewards.read")
     return rewards.load(database.engine(DB_PATH), user)
 
 
@@ -786,12 +882,14 @@ for path, method, operation in (
 @app.get("/api/recipes")
 def recipes_read(request: Request):
     user = authorized(RequestContext(request))
+    require_permission(user, "meals.read")
     return meals.recipes(database.engine(DB_PATH), user)
 
 
 @app.get("/api/meals")
 def meals_read(request: Request, date: str | None = None):
     user = authorized(RequestContext(request))
+    require_permission(user, "meals.read")
     return meals.plan(database.engine(DB_PATH), user, date)
 
 
@@ -809,6 +907,7 @@ app.add_api_route("/api/meals/groceries", meals_write, methods=["POST"], name="m
 @app.get("/api/six")
 def six_read(request: Request):
     user = authorized(RequestContext(request))
+    require_permission(user, "assistant.use")
     if not assistant.available():
         return {"modelEnabled": False, "jobs": []}
     return assistant.list_jobs(database.engine(DB_PATH), user)
@@ -827,7 +926,47 @@ app.add_api_route("/api/six/{target}/decision", six_write, methods=["POST"], nam
 @app.get("/api/inventory")
 def inventory_read(request: Request, location: str = ""):
     user = authorized(RequestContext(request))
+    require_permission(user, "inventory.read")
     return inventory.load(database.engine(DB_PATH), user, location)
+
+
+@app.get("/api/maintenance/templates")
+def maintenance_templates_read(request: Request):
+    user = authorized(RequestContext(request))
+    require_permission(user, "maintenance.read")
+    return {"templates": property_care.maintenance_templates()}
+
+
+@app.get("/api/maintenance")
+def maintenance_read(request: Request):
+    user = authorized(RequestContext(request))
+    require_permission(user, "maintenance.read")
+    return property_care.load(database.engine(DB_PATH), user)
+
+
+@app.get("/api/vehicles")
+def vehicles_read(request: Request):
+    user = authorized(RequestContext(request))
+    require_permission(user, "vehicles.read")
+    return property_care.load(database.engine(DB_PATH), user)
+
+
+async def property_care_write(request: Request):
+    return await domain_write(request, property_care, "property-care")
+
+
+for base, operations in (
+    ("/api/maintenance", (("", "POST", "maintenance.create"),
+                           ("/{target}", "PUT", "maintenance.update"),
+                           ("/{target}", "DELETE", "maintenance.archive"),
+                           ("/{target}/complete", "POST", "maintenance.complete"))),
+    ("/api/vehicles", (("", "POST", "vehicle.create"),
+                        ("/{target}", "PUT", "vehicle.update"),
+                        ("/{target}", "DELETE", "vehicle.archive"),
+                        ("/services", "POST", "vehicle.service.create"))),
+):
+    for path, method, operation in operations:
+        app.add_api_route(base + path, property_care_write, methods=[method], name=operation)
 
 
 async def inventory_write(request: Request):
@@ -846,6 +985,7 @@ for path, method, operation in (
 @app.get("/api/announcements")
 def announcements_read(request: Request, include_expired: bool = False):
     user = authorized(RequestContext(request))
+    require_permission(user, "announcements.read")
     return announcements.load(database.engine(DB_PATH), user, archive=include_expired)
 
 
@@ -865,12 +1005,14 @@ for path, method, operation in (
 @app.get("/api/habits")
 def habits_read(request: Request):
     user = authorized(RequestContext(request))
+    require_permission(user, "habits.read")
     return habits.load(database.engine(DB_PATH), user)
 
 
 @app.get("/api/allowance")
 def allowance_read(request: Request):
     user = authorized(RequestContext(request))
+    require_permission(user, "allowance.read")
     return allowance.load(database.engine(DB_PATH), user)
 
 
@@ -895,7 +1037,7 @@ app.add_api_route("/api/allowance", allowance_write, methods=["POST"], name="all
 STATIC_TYPES = {
     "index.html": "text/html", "app.js": "text/javascript", "offline.js": "text/javascript",
     "shopping.js": "text/javascript", "html.js": "text/javascript",
-    "chores.js": "text/javascript", "rewards.js": "text/javascript", "meals.js": "text/javascript", "six.js": "text/javascript", "members-life.js": "text/javascript", "announcements.js": "text/javascript", "inventory.js": "text/javascript", "calendar.js": "text/javascript", "dashboard.js": "text/javascript", "dates.js": "text/javascript", "style.css": "text/css",
+    "chores.js": "text/javascript", "rewards.js": "text/javascript", "meals.js": "text/javascript", "six.js": "text/javascript", "members-life.js": "text/javascript", "announcements.js": "text/javascript", "inventory.js": "text/javascript", "property-care.js": "text/javascript", "calendar.js": "text/javascript", "dashboard.js": "text/javascript", "dates.js": "text/javascript", "style.css": "text/css",
     "manifest.webmanifest": "application/manifest+json", "sw.js": "text/javascript",
     "logo.svg": "image/svg+xml", "icon.svg": "image/svg+xml",
     **dict.fromkeys(("apple-touch-icon.png", "pwa-192.png", "pwa-512.png", "pwa-maskable-512.png"), "image/png"),

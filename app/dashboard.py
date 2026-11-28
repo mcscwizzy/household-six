@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from app import calendar_service, chores as chore_service
 from app.dates import local_day
+from app.ledger import ADULT_ROLES
 from app.mutations import statement
 
 
@@ -53,6 +54,26 @@ def load(database, user):
             FROM users u LEFT JOIN points_ledger p ON p.member_id=u.id AND p.household_id=u.household_id
             WHERE u.household_id=:h AND u.disabled_at IS NULL AND u.role<>'display'
             GROUP BY u.id ORDER BY u.created_at,u.id""", h=household).mappings()
+        care = {"maintenance": [], "vehicleReminders": []}
+        if user["role"] in ADULT_ROLES:
+            maintenance = statement(connection, """SELECT s.id,s.title,s.due_on dueOn,s.season,
+                a.category,u.display_name assignedName FROM maintenance_schedules s
+                JOIN maintenance_assets a ON a.id=s.asset_id AND a.household_id=s.household_id
+                LEFT JOIN users u ON u.id=s.assigned_to AND u.household_id=s.household_id
+                WHERE s.household_id=:h AND s.active=1 AND a.archived_at IS NULL AND s.due_on<=:end
+                ORDER BY s.due_on,s.title LIMIT 30""", h=household, end=end).mappings()
+            service_due = statement(connection, """SELECT v.id vehicleId,v.nickname,v.make,v.model,
+                s.service_type serviceType,s.due_on dueOn,s.due_odometer dueOdometer,v.odometer
+                FROM vehicle_services s JOIN vehicles v ON v.id=s.vehicle_id AND v.household_id=s.household_id
+                WHERE s.household_id=:h AND v.archived_at IS NULL AND
+                (s.due_on<=:end OR s.due_odometer IS NOT NULL AND s.due_odometer<=v.odometer+1000)
+                ORDER BY COALESCE(s.due_on,'9999-12-31'),s.due_odometer LIMIT 30""", h=household, end=end).mappings()
+            registrations = statement(connection, """SELECT id vehicleId,nickname,make,model,
+                'Registration renewal' serviceType,registration_due dueOn,NULL dueOdometer,odometer
+                FROM vehicles WHERE household_id=:h AND archived_at IS NULL AND registration_due<=:end
+                ORDER BY registration_due LIMIT 30""", h=household, end=end).mappings()
+            care = {"maintenance": [dict(entry) for entry in maintenance],
+                    "vehicleReminders": [dict(entry) for entry in list(service_due) + list(registrations)]}
         return {"date": today, "appointments": appointments, "upcoming": upcoming,
                 "chores": chores, "overdue": overdue, "scheduledChores": scheduled, "scheduledOverdue": scheduled_overdue, "unscheduled": unscheduled, "meals": meals,
-                "shopping": [dict(entry) for entry in shopping], "balances": [dict(entry) for entry in balances]}
+                "shopping": [dict(entry) for entry in shopping], "balances": [dict(entry) for entry in balances], **care}

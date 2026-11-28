@@ -117,6 +117,17 @@ class HouseholdServiceTest(unittest.TestCase):
         self.assertFalse(s.can_create_item("child", "event"))
         self.assertFalse(s.can_create_item("display", "task"))
 
+    def test_write_routes_use_the_explicit_role_permission_matrix(self):
+        s=self.service
+        self.assertEqual(s.write_permission("chore.complete", "child"), "chore.complete.assigned")
+        self.assertEqual(s.write_permission("shopping.item.create", "child"), "shopping.write")
+        self.assertEqual(s.write_permission("reward.request", "child"), "reward.request")
+        self.assertEqual(s.write_permission("calendar.create", "adult"), "calendar.write")
+        self.assertEqual(s.write_permission("maintenance.create", "owner"), "maintenance.manage")
+        self.assertEqual(s.write_permission("vehicle.service.create", "adult"), "vehicles.manage")
+        self.assertFalse(s.permissions.allowed("child", "budget.read"))
+        self.assertFalse(s.permissions.allowed("display", "private.document.read"))
+
     def test_completion_rejects_a_stale_entity_version(self):
         s=self.service
         self.con.execute("INSERT INTO items(id,household_id,kind,title,created_by) VALUES('versioned','home','task','Versioned task','parent')")
@@ -173,8 +184,9 @@ class HouseholdServiceTest(unittest.TestCase):
                 ledger=upgraded.execute("SELECT id,amount FROM points_ledger WHERE id='legacy-ledger'").fetchone()
                 self.assertEqual((ledger["id"],ledger["amount"]), ("legacy-ledger",3))
                 versions={row[0] for row in upgraded.execute("SELECT version FROM schema_migrations")}
-                self.assertEqual(versions, set(range(1, 13)))
+                self.assertEqual(versions, set(range(1, 15)))
                 self.assertIn("disabled_at", {row[1] for row in upgraded.execute("PRAGMA table_info(users)")})
+                self.assertIn("avatar_key", {row[1] for row in upgraded.execute("PRAGMA table_info(users)")})
                 upgraded.close()
             finally:
                 s.DATA_DIR, s.DB_PATH=original_dir, original_path

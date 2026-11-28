@@ -9,7 +9,7 @@ export function dashboardView(data, household, canAdd, renderTask, renderBalance
   if (!data) return `${header}<p class="empty">Connect to load your household’s schedule.</p>`;
   const section = (label, nav, rows, render, empty) => `<section>
     <div class="section-head"><h2>${label}</h2>
-    <button class="text-button" data-nav="${nav}">${({ calendar: 'Calendar', tasks: 'Chores', meals: 'Meal plan', shopping: 'Lists', rewards: 'Rewards' })[nav]} →</button></div>
+    <button class="text-button" data-nav="${nav}">${({ calendar: 'Calendar', tasks: 'Chores', meals: 'Meal plan', shopping: 'Lists', rewards: 'Rewards', maintenance: 'Maintenance', vehicles: 'Vehicles' })[nav]} →</button></div>
     ${rows.length ? `<div class="list">${rows.map(render).join('')}</div>` : `<p class="empty">${empty}</p>`}
   </section>`;
   const renderUpcoming = event => {
@@ -29,6 +29,8 @@ export function dashboardView(data, household, canAdd, renderTask, renderBalance
       ${section('Today’s chores', 'tasks', [...data.scheduledChores, ...data.chores], renderTask, 'No chores due today.')}
       ${data.overdue.length || data.scheduledOverdue.length ? section('Overdue chores', 'tasks', [...data.scheduledOverdue, ...data.overdue], renderTask, '') : ''}
       ${data.unscheduled.length ? section('Chores without a due date', 'tasks', data.unscheduled, renderTask, '') : ''}
+      ${data.maintenance?.length ? section('Home maintenance due', 'maintenance', data.maintenance, item => `<article class="card row"><div class="item-main"><strong>${h(item.title)}</strong><div class="item-detail">${h(item.dueOn)}${item.assignedName ? ` · ${h(item.assignedName)}` : ''}${item.season ? ` · ${h(item.season)} season` : ''}</div></div></article>`, '') : ''}
+      ${data.vehicleReminders?.length ? section('Vehicle reminders', 'vehicles', data.vehicleReminders, item => `<article class="card row"><div class="item-main"><strong>${h(item.nickname || `${item.make} ${item.model}`)} · ${h(item.serviceType)}</strong><div class="item-detail">${item.dueOn ? `Due ${h(item.dueOn)}` : ''}${item.dueOdometer != null ? `${item.dueOn ? ' · ' : ''}${item.dueOdometer.toLocaleString()} miles` : ''}</div></div></article>`, '') : ''}
       ${section('Shopping summary', 'shopping', data.shopping, list =>
         `<button class="card row dashboard-shopping" data-dashboard-list="${h(list.id)}">${h(list.name)} <strong>${list.open} to get</strong></button>`, 'No items on the shopping lists.')}
       <section>

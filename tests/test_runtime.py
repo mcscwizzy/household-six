@@ -496,3 +496,75 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(len(ledger["wallets"]), 1)
         self.assertEqual(ledger["wallets"][0]["balance"], 325)
         self.assertEqual(len(ledger["entries"]), 2)
+
+    def test_property_care_http_permissions_schedules_and_vehicle_history(self):
+        owner, child = self.client(), self.client()
+        owner_auth = self.setup_owner(owner)
+        password = "A disposable passphrase"
+        _, member = self.request(owner, "/api/members", {
+            "csrf": owner_auth["csrf"], "displayName": "Child", "username": "child", "role": "child", "password": password,
+        })
+        _, child_auth = self.request(child, "/api/login", {"username": "child", "password": password})
+        status, templates = self.request(owner, "/api/maintenance/templates")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(templates["templates"]), 7)
+        self.assertEqual(self.request(owner, "/api/maintenance")[1]["schedules"], [])
+        self.assertEqual(self.request(child, "/api/maintenance")[0], 403)
+
+        fields = {"title": "HVAC filter", "category": "hvac", "dueOn": "2026-12-01",
+                  "frequency": "quarterly", "intervalCount": 1, "assignedTo": member["id"],
+                  "estimatedCostCents": 1800}
+        denied = self.request(child, "/api/maintenance", {**fields, "csrf": child_auth["csrf"], "mutationId": str(uuid.uuid4())})
+        self.assertEqual(denied[0], 403)
+        status, schedule = self.request(owner, "/api/maintenance", {
+            **fields, "csrf": owner_auth["csrf"], "mutationId": str(uuid.uuid4()),
+        })
+        self.assertEqual(status, 201)
+        owner_today = self.request(owner, "/api/dashboard")[1]
+        self.assertEqual(owner_today["maintenance"][0]["title"], "HVAC filter")
+        self.assertEqual(self.request(child, "/api/dashboard")[1]["maintenance"], [])
+        complete_path = f"/api/maintenance/{schedule['id']}/complete"
+        stale = self.request(owner, complete_path, {
+            "csrf": owner_auth["csrf"], "mutationId": str(uuid.uuid4()), "expectedVersion": 9,
+            "performedOn": "2026-12-01", "costCents": 2400,
+        })
+        self.assertEqual(stale[0], 409)
+        status, saved = self.request(owner, complete_path, {
+            "csrf": owner_auth["csrf"], "mutationId": str(uuid.uuid4()), "expectedVersion": 1,
+            "performedOn": "2026-12-01", "costCents": 2400,
+        })
+        self.assertEqual((status, saved["dueOn"]), (200, "2027-03-01"))
+        self.assertEqual(self.request(owner, "/api/maintenance")[1]["history"][0]["costCents"], 2400)
+
+        status, vehicle = self.request(owner, "/api/vehicles", {
+            "csrf": owner_auth["csrf"], "mutationId": str(uuid.uuid4()), "make": "Toyota", "model": "Prius",
+            "year": 2022, "fuel": "hybrid", "odometer": 28000, "nickname": "Blue car", "registrationDue": "2026-12-01",
+        })
+        self.assertEqual(status, 201)
+        status, service = self.request(owner, "/api/vehicles/services", {
+            "csrf": owner_auth["csrf"], "mutationId": str(uuid.uuid4()), "vehicleId": vehicle["id"],
+            "serviceType": "Tire rotation", "performedOn": "2026-11-27", "odometer": 28000,
+            "intervalMiles": 5000, "costCents": 7500,
+        })
+        self.assertEqual((status, service["dueOdometer"]), (201, 33000))
+        self.assertEqual(self.request(owner, "/api/dashboard")[1]["vehicleReminders"][0]["serviceType"], "Registration renewal")
+        self.assertEqual(self.request(child, "/api/vehicles")[0], 403)
+
+    def test_household_session_listing_requires_account_management_scope(self):
+        owner, child = self.client(), self.client()
+        owner_auth = self.setup_owner(owner)
+        password = "A disposable passphrase"
+        _, member = self.request(owner, "/api/members", {
+            "csrf": owner_auth["csrf"], "displayName": "Child", "username": "child", "role": "child", "password": password,
+        })
+        _, child_auth = self.request(child, "/api/login", {"username": "child", "password": password})
+        status, sessions = self.request(owner, "/api/sessions/list", {
+            "csrf": owner_auth["csrf"], "targetId": member["id"],
+        }, method="POST")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(sessions["sessions"]), 1)
+        self.assertFalse(sessions["sessions"][0]["current"])
+        denied = self.request(child, "/api/sessions/list", {
+            "csrf": child_auth["csrf"], "targetId": owner_auth["user"]["id"],
+        }, method="POST")
+        self.assertEqual(denied[0], 403)

@@ -2,7 +2,7 @@
 
 **Your household. Your hardware. Your data.**
 
-Household Six is an independently developed, self-hosted household organizer. It includes a household calendar, chore and reward approvals, weekly meals and recipes, grocery synchronization, shopping lists, food inventory, announcements, habits, allowance and a display mode. Six and private MCP are optional.
+Household Six is an independently developed, self-hosted household organizer. The local app includes a household calendar, chore and reward approvals, meal planning, shared shopping and pantry inventory, announcements, habits, allowance, a read-only display, household member administration, home maintenance and vehicle service records. Six and private MCP are optional.
 
 See [implementation status](IMPLEMENTATION_STATUS.md) and the [feature matrix](docs/FEATURE_PARITY.md) for tested workflows and the remaining product backlog.
 
@@ -66,10 +66,29 @@ python3 -m compileall -q app tests scripts
 node --check app/static/app.js
 ```
 
+Run loopback HTTP tests on a host that permits local sockets:
+
+```sh
+HOUSEHOLD_SIX_LIVE=1 python3 -m unittest discover -s tests -v
+```
+
+The Playwright suite needs installed Chromium and WebKit browsers plus a local server configured with an HTTP `APP_URL`:
+
+```sh
+npm ci
+APP_URL=http://127.0.0.1:3000 DATA_DIR=/tmp/household-six-e2e \
+  BIND_ADDRESS=127.0.0.1 APP_PORT=3000 python3 -m app.server
+npm run test:e2e
+```
+
+The checked-in Compose smoke script creates synthetic data, then verifies session and database persistence across a container restart. Run it only with a disposable project and data volume. See [testing](docs/TESTING.md).
+
 ## Architecture note
 
 Uvicorn serves the FastAPI application. SQLAlchemy configures local SQLite connections with WAL, and Alembic applies the original additive migrations and tracks new ones. Set `DATA_PATH` to a volume backed by local NAS storage.
 
 `requirements.lock` pins and hashes the runtime dependency tree for Python 3.12. `requirements-optional.lock` also includes the MCP SDK. Browser test dependencies are installed with `npm ci`. Set `HOUSEHOLD_SIX_LIVE=1` when running the test suite on a machine that can bind a loopback socket.
+
+The v1.0 release candidate has not been prepared. Invitations, parent PIN/shared-device switching, secure household document storage, emergency records, budgeting, devotional and prayer tracking, photo albums, a durable general reminder scheduler, expanded offline viewing and several planner/calendar integrations remain incomplete. Physical NAS and iPhone acceptance have not been performed. Do not treat the current branch as a production release.
 
 See [implementation status](IMPLEMENTATION_STATUS.md), [known limitations](docs/KNOWN_LIMITATIONS.md), [architecture](docs/ARCHITECTURE.md), and [ADR 0001](docs/adr/0001-approved-runtime-and-data-store.md).

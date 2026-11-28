@@ -11,9 +11,10 @@ import { householdDate, shiftDay } from './dates.js';
 import { shoppingView } from './shopping.js';
 import { escapeHtml as esc } from './html.js';
 import { clearLegacyCaches, clearQueued, queuedFor, removeQueued, storeQueued } from './offline.js';
+import { maintenanceCompleteForm, maintenanceForm, maintenanceView, vehicleForm, vehiclesView, vehicleServiceForm } from './property-care.js';
 const $=s=>document.querySelector(s);const app=$('#app');
 const SIGNED_OUT = 'hs-explicit-signout';
-const modules={today:['Today','☀️'],calendar:['Calendar','▦'],tasks:['Chores','✓'],meals:['Meals','♨'],more:['More','⌘'],shopping:['Shopping lists','🛒'],recipes:['Recipes','🍲'],inventory:['Pantry & freezer','🥕'],rewards:['Rewards','⭐'],announcements:['Announcements','📌'],habits:['Habits','◉'],allowance:['Allowance','$']};
+const modules={today:['Today','☀️'],calendar:['Calendar','▦'],tasks:['Chores','✓'],meals:['Meals','♨'],more:['More','⌘'],shopping:['Shopping lists','🛒'],recipes:['Recipes','🍲'],inventory:['Pantry & freezer','🥕'],rewards:['Rewards','⭐'],announcements:['Announcements','📌'],habits:['Habits','◉'],allowance:['Allowance','$'],maintenance:['Maintenance','⌂'],vehicles:['Vehicles','🚗']};
 let me=null,csrf='',screen='today',members=[],items=[],message='',error='',offline=false,authState='signed-out',live=null,quickOpen=false;
 let shoppingData = null;
 let shoppingList = 'default';
@@ -48,6 +49,9 @@ let announcementData = null;
 let showExpired = false;
 let habitsData = null;
 let allowanceData = null;
+let sessionsData = null;
+let memberSessionsData = {};
+let propertyCareData = null;
 
 
 
@@ -55,6 +59,9 @@ let allowanceData = null;
 function resetPrivateViews() {
   habitsData = null;
   allowanceData = null;
+  sessionsData = null;
+  memberSessionsData = {};
+  propertyCareData = null;
   announcementData = null;
   showExpired = false;
   inventoryData = null;
@@ -87,7 +94,8 @@ function resetPrivateViews() {
 async function expireLocalSession(){const expiredId=me?.id;if(expiredId)try{await clearQueued(expiredId)}catch{}clearLegacyCaches();resetPrivateViews();me=null;csrf='';members=[];items=[];offline=false;authState='signed-out';if(live){live.close();live=null}renderAuth(false)}
 clearLegacyCaches();
 function formHasDraft(){
-  if (['calendar-form', 'chore-form', 'reward-form', 'meal-form', 'recipe-form','inventory-form','announcement-form','habit-form'].includes(screen) || document.querySelector('#calendar-import input')?.files?.length) return true;
+  if (['calendar-form', 'chore-form', 'reward-form', 'meal-form', 'recipe-form','inventory-form','announcement-form','habit-form','maintenance-form','vehicle-form','vehicle-service-form'].includes(screen) || document.querySelector('#calendar-import input')?.files?.length) return true;
+  if (['members', 'settings'].includes(screen) && document.activeElement?.closest('form[data-profile-id],form[data-member-reset],#profile-form,#password-form')) return true;
   if (screen === 'allowance' && document.activeElement?.closest('#allowance-form')) return true;
   if (screen === 'inventory' && document.activeElement?.closest('.inventory-stock-form')) return true;
   if (screen === 'six' && document.activeElement?.closest('#six-form')) return true;
@@ -97,20 +105,23 @@ if(!screen.startsWith('new:'))return false;const form=$('#item-form');return !!f
 function setNotice(text,isError=false){message=isError?'':text;error=isError?text:'';render()}
 async function api(path,options={}){const headers={'Content-Type':'application/json',...(options.headers||{})};if(options.method&&options.method!=='GET'&&csrf)headers['X-CSRF-Token']=csrf;return fetch(path,{...options,headers,credentials:'same-origin'})}
 function navButton(id,side=false){const [name,icon]=modules[id];return `<button class="${side?'side-button':'nav-item'} ${screen===id?'active':''}" data-nav="${id}">${side?`<span>${icon}</span><span>${name}</span>`:`<span class="nav-icon">${icon}</span><span>${name==='Shopping lists'?'Lists':name}</span>`}</button>`}
-function shell(content){return `<div class="shell"><aside class="side"><div class="side-brand"><img src="/logo.svg" alt=""><span>Household Six</span></div>${['today','calendar','tasks','meals','more'].map(x=>navButton(x,true)).join('')}<div class="side-spacer"></div><button class="side-button" data-action="theme">◐ <span>Appearance</span></button></aside><header class="topbar"><div class="brand"><img src="/logo.svg" alt=""><span>Household Six</span></div><div class="top-actions"><span class="connection ${offline?'offline':''}">${authState==='offline-authorized'?'Offline authorized · changes pending':'● Local & private'}</span><button class="theme" data-action="theme" aria-label="Toggle appearance">◐</button></div></header><main class="main">${message?`<div class="notice">${esc(message)}</div>`:''}${error?`<div class="notice error">${esc(error)}</div>`:''}${content}<p class="footer-note">Your household. Your hardware. Your data.</p></main><nav class="bottom-nav" aria-label="Main navigation">${['today','calendar','tasks','meals','more'].map(x=>navButton(x)).join('')}</nav>${!['shopping','calendar','calendar-form','chore-form','reward-form','rewards','meal-form','recipe-form','meals','recipes','six','inventory','inventory-form','announcement-form','announcements','habit-form','habits','allowance'].includes(screen)&&canCreateKind(screen==='tasks'?'task':screen==='events'?'event':screen)?'<button class="quick" data-action="add" aria-label="Add item">+</button>':''}${quickOpen?quickMenu():''}</div>`}
+function shell(content){return `<div class="shell"><aside class="side"><div class="side-brand"><img src="/logo.svg" alt=""><span>Household Six</span></div>${['today','calendar','tasks','meals','more'].map(x=>navButton(x,true)).join('')}<div class="side-spacer"></div><button class="side-button" data-action="theme">◐ <span>Appearance</span></button></aside><header class="topbar"><div class="brand"><img src="/logo.svg" alt=""><span>Household Six</span></div><div class="top-actions"><span class="connection ${offline?'offline':''}">${authState==='offline-authorized'?'Offline authorized · changes pending':'● Local & private'}</span><button class="theme" data-action="theme" aria-label="Toggle appearance">◐</button></div></header><main class="main">${message?`<div class="notice">${esc(message)}</div>`:''}${error?`<div class="notice error">${esc(error)}</div>`:''}${content}<p class="footer-note">Your household. Your hardware. Your data.</p></main><nav class="bottom-nav" aria-label="Main navigation">${['today','calendar','tasks','meals','more'].map(x=>navButton(x)).join('')}</nav>${!['shopping','calendar','calendar-form','chore-form','reward-form','rewards','meal-form','recipe-form','meals','recipes','six','inventory','inventory-form','announcement-form','announcements','habit-form','habits','allowance','maintenance','maintenance-form','vehicles','vehicle-form','vehicle-service-form'].includes(screen)&&canCreateKind(screen==='tasks'?'task':screen==='events'?'event':screen)?'<button class="quick" data-action="add" aria-label="Add item">+</button>':''}${quickOpen?quickMenu():''}</div>`}
 function memberChips(balances){return `<div class="member-row">${balances.map(m=>`<div class="member"><span class="avatar color-${avatarColor(m.color)}">${esc(m.display_name.slice(0,1).toUpperCase())}</span>${esc(m.display_name)}${` · ${m.points} pts`}</div>`).join('')}</div>`}
 function avatarColor(color){return ({'#233C32':'forest','#78937D':'sage','#C69A5D':'gold','#54768C':'blue','#9B6B72':'rose','#7B6C9B':'violet'})[color]||'sage'}
 function canCreateKind(kind){if(!me||me.role==='display')return false;if(['owner','admin','adult'].includes(me.role))return true;return me.role==='child'&&['task','shopping'].includes(kind)}
 function quickMenu(){const choices=[['task','Task'],['chore','Chore'],['event','Calendar event'],['shopping','Shopping item'],['meal','Meal'],['inventory','Inventory item'],['recipe','Recipe'],['reward','Reward'],['announcement','Announcement']].filter(([kind])=>canCreateKind(kind === 'chore' ? 'event' : kind));return `<div class="quick-menu card" role="group" aria-label="Quick add">${choices.map(([kind,label])=>`<button class="quick-choice" data-new-kind="${kind}">${label}</button>`).join('')}</div>`}
 function itemCard(item){const who=item.assigned_name||members.find(m=>m.id===item.assigned_to)?.display_name;const completable=['task','shopping'].includes(item.kind);const label={event:'Scheduled',meal:'Planned',inventory:'In stock',recipe:'Saved',reward:'Available',announcement:'Posted'}[item.kind]||'Saved';const control=me.role==='display'?`<span class="badge">${item.completed?'Done':'Read only'}</span>`:completable?`<button class="check ${item.completed?'done':''}" data-complete="${esc(item.id)}" aria-label="${item.completed?'Completed':'Complete'} ${esc(item.title)}">${item.completed?'✓':''}</button>`:`<span class="badge">${item.completed?'Done':label}</span>`;return `<article class="card row item-card ${item.completed?'completed':''}">${control}<div class="item-main"><div class="item-title">${esc(item.title)}</div><div class="item-detail">${esc(item.details||item.due_at||'')}${who?' · '+esc(who):''}</div></div>${item.value?`<span class="badge">⭐ ${item.value}</span>`:''}</article>`}
-function moreView(){const tiles=['shopping','recipes','inventory','rewards','announcements',...(me.role === 'display' ? [] : ['habits','allowance'])];return `<div class="greeting"><div><div class="eyebrow">Your family toolkit</div><h1>More</h1><div class="subtle">Everything the household shares.</div></div></div><div class="more-grid">${tiles.map(id=>`<button class="card more-tile" data-nav="${id}"><span class="tile-icon">${modules[id][1]}</span><strong>${modules[id][0]}</strong><span class="item-detail">Open shared ${modules[id][0].toLowerCase()}</span></button>`).join('')}${['owner','admin','adult'].includes(me.role)?'<button class="card more-tile" data-nav="six"><span class="tile-icon">✦</span><strong>Six</strong><span class="item-detail">Local assistant</span></button>':''}<button class="card more-tile" data-nav="members"><span class="tile-icon">👨‍👩‍👧</span><strong>Members</strong><span class="item-detail">Household profiles</span></button><button class="card more-tile" data-nav="wall"><span class="tile-icon">▦</span><strong>Household display</strong><span class="item-detail">Clock and family schedule</span></button><button class="card more-tile" data-nav="settings"><span class="tile-icon">⚙️</span><strong>Settings</strong><span class="item-detail">Account and privacy</span></button></div>`}
+function moreView(){const tiles=['shopping','recipes','inventory','rewards','announcements',...(me.role === 'display' ? [] : ['habits','allowance']),...(['owner','admin','adult'].includes(me.role)?['maintenance','vehicles']:[])];return `<div class="greeting"><div><div class="eyebrow">Your family toolkit</div><h1>More</h1><div class="subtle">Everything the household shares.</div></div></div><div class="more-grid">${tiles.map(id=>`<button class="card more-tile" data-nav="${id}"><span class="tile-icon">${modules[id][1]}</span><strong>${modules[id][0]}</strong><span class="item-detail">Open shared ${modules[id][0].toLowerCase()}</span></button>`).join('')}${['owner','admin','adult'].includes(me.role)?'<button class="card more-tile" data-nav="six"><span class="tile-icon">✦</span><strong>Six</strong><span class="item-detail">Local assistant</span></button>':''}<button class="card more-tile" data-nav="members"><span class="tile-icon">👨‍👩‍👧</span><strong>Members</strong><span class="item-detail">Household profiles</span></button><button class="card more-tile" data-nav="wall"><span class="tile-icon">▦</span><strong>Household display</strong><span class="item-detail">Clock and family schedule</span></button><button class="card more-tile" data-nav="settings"><span class="tile-icon">⚙️</span><strong>Settings</strong><span class="item-detail">Account and privacy</span></button></div>`}
 function formView(kind){const label={task:'Task',event:'Calendar event',shopping:'Shopping item',meal:'Meal',inventory:'Inventory item',recipe:'Recipe',reward:'Reward',announcement:'Announcement'}[kind]||'Item';return `<div class="greeting"><div><div class="eyebrow">${esc(me.household)}</div><h1>Add ${label.toLowerCase()}</h1><div class="subtle">Your change is saved to your household server.</div></div></div><form class="card form-card form" id="item-form"><label class="field">Title<input name="title" maxlength="120" required autofocus placeholder="${kind==='shopping'?'e.g. Milk':'What would you like to add?'}"></label><label class="field">Notes<textarea name="details" maxlength="1000" placeholder="Add a helpful note (optional)"></textarea></label>${['task','event','meal','inventory'].includes(kind)?`<label class="field">${kind==='event'?'Date and time':'Date'}<input name="dueAt" type="${kind==='event'?'datetime-local':'date'}"></label>`:''}${kind==='task'&&me.role!=='child'?`<label class="field">Assign to<select name="assignedTo"><option value="">Anyone</option>${members.map(m=>`<option value="${esc(m.id)}">${esc(m.display_name)}</option>`).join('')}</select></label><label class="field">Points for completion<input type="number" name="points" min="0" max="10000" value="0"></label>`:''}<div class="actions"><button class="primary" type="submit">Save ${label.toLowerCase()}</button><button class="secondary" type="button" data-nav="${kind==='event'?'calendar':kind==='task'?'tasks':'more'}">Cancel</button></div></form>`}
-function memberView(){return `<div class="greeting"><div><div class="eyebrow">Household profiles</div><h1>Members</h1><div class="subtle">Everyone who shares your household.</div></div></div><div class="list">${members.map(m=>`<div class="card row item-card"><span class="avatar color-${avatarColor(m.color)}">${esc(m.display_name[0])}</span><div class="item-main"><div class="item-title">${esc(m.display_name)}</div><div class="item-detail">${esc(m.role)}</div></div></div>`).join('')}</div>${me.role==='owner'||me.role==='admin'?`<div class="section-head"><h2>Add a member</h2></div><form id="member-form" class="card form"><label class="field">Name<input name="displayName" required></label><label class="field">Username<input name="username" minlength="3" required></label><label class="field">Role<select name="role">${(me.role==='owner'?['admin','adult','child','display']:['adult','child','display']).map(role=>`<option value="${role}">${role==='admin'?'Administrator':role==='child'?'Child profile':role==='display'?'Read-only display':'Adult'}</option>`).join('')}</select></label><label class="field">Member color<select name="color">
+function avatarChoices(selected='person'){const options={person:'Person',fox:'Fox',bear:'Bear',rabbit:'Rabbit',sun:'Sun',leaf:'Leaf',star:'Star'};return Object.entries(options).map(([id,label])=>`<option value="${id}" ${id===selected?'selected':''}>${label}</option>`).join('')}
+function memberProfileForm(member){return `<form class="card form" data-profile-id="${esc(member.id)}"><label class="field">Name<input name="displayName" maxlength="70" value="${esc(member.display_name)}" required></label><label class="field">Member color<select name="color">${[['#78937D','Sage'],['#233C32','Forest'],['#C69A5D','Gold'],['#54768C','Blue'],['#9B6B72','Rose'],['#7B6C9B','Violet']].map(([value,label])=>`<option value="${value}" ${member.color===value?'selected':''}>${label}</option>`).join('')}</select></label><label class="field">Avatar<select name="avatar">${avatarChoices(member.avatar_key)}</select></label><button class="secondary">Save profile</button></form>`}
+function memberSessionsPanel(member){const sessions=memberSessionsData[member.id];return `<details data-panel="member-sessions-${esc(member.id)}"><summary>Device sessions</summary><button class="secondary" type="button" data-member-sessions="${esc(member.id)}">Load active sessions</button>${Array.isArray(sessions)?sessions.length?`<div class="list">${sessions.map(session=>`<article class="card row"><div class="item-main"><strong>${esc(session.deviceName)}${session.current?' · This device':''}</strong><div class="item-detail">Started ${esc(session.createdAt.slice(0,16))} · Expires ${esc(session.expiresAt.slice(0,10))}</div></div><button class="secondary" data-session-revoke="${esc(session.id)}">Revoke</button></article>`).join('')}</div>`:'<p class="empty">No active sessions found.</p>':''}</details>`}
+function memberView(){const admin=['owner','admin'].includes(me.role);const manage=m=>m.id!==me.id&&m.role!=='owner'&&(me.role==='owner'||['adult','child','display'].includes(m.role));return `<div class="greeting"><div><div class="eyebrow">Household profiles</div><h1>Members</h1><div class="subtle">Profiles stay inside this household.</div></div></div><div class="list">${members.map(m=>`<article class="card domain-row"><div class="row"><span class="avatar color-${avatarColor(m.color)}">${m.avatar_key==='person'?esc(m.display_name[0]):({fox:'🦊',bear:'🐻',rabbit:'🐰',sun:'☀️',leaf:'🍃',star:'⭐'}[m.avatar_key]||esc(m.display_name[0]))}</span><div class="item-main"><div class="item-title">${esc(m.display_name)} ${m.disabled_at?'<span class="badge">Disabled</span>':''}</div><div class="item-detail">${esc(m.role)}</div></div></div><details data-panel="member-profile-${esc(m.id)}"><summary>Edit profile</summary>${(m.id===me.id||admin&&manage(m))?memberProfileForm(m):'<p class="item-detail">Only you or an authorized household administrator can edit this profile.</p>'}</details>${manage(m)?`<div class="actions"><button type="button" class="secondary" data-account-status="${esc(m.id)}" data-active="${m.disabled_at?'false':'true'}">${m.disabled_at?'Reactivate account':'Disable account'}</button></div><details data-panel="member-reset-${esc(m.id)}"><summary>Reset password</summary><form class="card form" data-member-reset="${esc(m.id)}"><label class="field">New password<input name="newPassword" type="password" minlength="12" maxlength="200" autocomplete="new-password" required></label><button class="secondary">Reset password and sign out devices</button></form></details>${memberSessionsPanel(m)}`:''}</article>`).join('')}</div>${admin?`<div class="section-head"><h2>Add a member</h2></div><form id="member-form" class="card form"><label class="field">Name<input name="displayName" required></label><label class="field">Username<input name="username" minlength="3" required></label><label class="field">Role<select name="role">${(me.role==='owner'?['admin','adult','child','display']:['adult','child','display']).map(role=>`<option value="${role}">${role==='admin'?'Administrator':role==='child'?'Child profile':role==='display'?'Read-only display':'Adult'}</option>`).join('')}</select></label><label class="field">Member color<select name="color">
   <option value="#78937D">Sage</option><option value="#233C32">Forest</option>
   <option value="#C69A5D">Gold</option><option value="#54768C">Blue</option>
   <option value="#9B6B72">Rose</option><option value="#7B6C9B">Violet</option></select></label>
   <label class="field">Password (required to sign in; 12+ characters)<input name="password" type="password" minlength="12"></label><button class="primary">Add household member</button></form>`:''}`}
-function settingsView(){return `<div class="greeting"><div><div class="eyebrow">Account</div><h1>Settings</h1><div class="subtle">Signed in as ${esc(me.displayName)} (${esc(me.role)}).</div></div></div><div class="card form"><div><strong>${esc(me.household)}</strong><div class="item-detail">Timezone: ${esc(me.timezone)}</div></div><label class="field">Appearance<select id="theme-select"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><form id="password-form" class="form"><div class="section-head"><h2>Change password</h2></div><label class="field">Current password<input type="password" name="currentPassword" required autocomplete="current-password"></label><label class="field">New password<input type="password" name="newPassword" minlength="12" required autocomplete="new-password"></label><button class="primary">Update password</button></form><button class="secondary" data-action="logout">Sign out</button><div class="item-detail">Your local household server holds your account and family data. No analytics or cloud account is used.</div></div>`}
+function settingsView(){return `<div class="greeting"><div><div class="eyebrow">Account</div><h1>Settings</h1><div class="subtle">Signed in as ${esc(me.displayName)} (${esc(me.role)}).</div></div></div><div class="card form"><div><strong>${esc(me.household)}</strong><div class="item-detail">Timezone: ${esc(me.timezone)}</div></div><label class="field">Appearance<select id="theme-select"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><details><summary>My profile</summary>${memberProfileForm({id:me.id,display_name:me.displayName,color:me.color,avatar_key:me.avatar||'person'})}</details><form id="password-form" class="form"><div class="section-head"><h2>Change password</h2></div><label class="field">Current password<input type="password" name="currentPassword" required autocomplete="current-password"></label><label class="field">New password<input type="password" name="newPassword" minlength="12" required autocomplete="new-password"></label><button class="primary">Update password</button></form><button class="secondary" data-action="logout">Sign out</button><div class="item-detail">Your local household server holds your account and family data. No analytics or cloud account is used.</div></div><div class="section-head"><h2>Active sessions</h2></div><div class="list">${sessionsData?.length?sessionsData.map(session=>`<article class="card row"><div class="item-main"><strong>${esc(session.deviceName)}${session.current?' · This device':''}</strong><div class="item-detail">Started ${esc(session.createdAt.slice(0,16))} · Expires ${esc(session.expiresAt.slice(0,10))}</div></div><button class="secondary" data-session-revoke="${esc(session.id)}">Revoke</button></article>`).join(''):'<p class="empty">No active sessions found.</p>'}</div>`}
 function render(){if(!me){renderAuth();return}
   if (screen === 'wall') {
     renderedScreen = 'wall';
@@ -137,7 +148,13 @@ function render(){if(!me){renderAuth();return}
   :screen==='announcement-form'?announcementForm(domainDraft)
   :screen==='habits'?habitsView(habitsData)
   :screen==='habit-form'?habitForm(domainDraft, members, canCreateKind('reward'), me.id)
-  :screen==='allowance'?allowanceView(allowanceData, canCreateKind('reward')):screen.startsWith('new:')?formView(screen.slice(4)):'';
+  :screen==='allowance'?allowanceView(allowanceData, canCreateKind('reward')):screen==='maintenance'?maintenanceView(propertyCareData,members,['owner','admin','adult'].includes(me.role))
+  :screen==='maintenance-form'?maintenanceForm(domainDraft,members,propertyCareData?.templates)
+  :screen==='maintenance-complete-form'?maintenanceCompleteForm(domainDraft,householdDate(me.timezone))
+  :screen==='vehicles'?vehiclesView(propertyCareData,['owner','admin','adult'].includes(me.role))
+  :screen==='vehicle-form'?vehicleForm(domainDraft)
+  :screen==='vehicle-service-form'?vehicleServiceForm(domainDraft?.vehicle,domainDraft?.service)
+  :screen.startsWith('new:')?formView(screen.slice(4)):'';
 const next = shell(content);
 if (next === renderedMarkup) return;
 renderedMarkup = next;
@@ -170,7 +187,9 @@ async function loadData({ background = false } = {}) {
     ? ['/api/rewards'] : view === 'meals' ? [`/api/meals?date=${encodeURIComponent(mealDate)}`]
     : view === 'recipes' ? ['/api/recipes'] : view === 'six' ? ['/api/six']
     : view === 'habits' ? ['/api/habits'] : view === 'allowance' ? ['/api/allowance']
-    : view === 'inventory' ? [`/api/inventory?location=${encodeURIComponent(inventoryLocation)}`] : kinds.map(kind => `/api/items?kind=${kind}`))];
+    : view === 'inventory' ? [`/api/inventory?location=${encodeURIComponent(inventoryLocation)}`]
+    : view === 'maintenance' || view === 'vehicles' ? ['/api/maintenance']
+    : view === 'settings' ? ['/api/sessions'] : kinds.map(kind => `/api/items?kind=${kind}`))];
   try {
     const responses = await Promise.all(paths.map(path => api(path)));
     if (!current()) return;
@@ -206,8 +225,14 @@ async function loadData({ background = false } = {}) {
     } else if (view === 'allowance') {
       [allowanceData] = records;
       items = [];
+    } else if (view === 'settings') {
+      [sessionsData] = [records[0]?.sessions || []];
+      items = [];
     } else if (view === 'inventory') {
       [inventoryData] = records;
+      items = [];
+    } else if (view === 'maintenance' || view === 'vehicles') {
+      [propertyCareData] = records;
       items = [];
     } else if (view === 'six') {
       [sixData] = records;
@@ -691,6 +716,48 @@ app.addEventListener('submit', event => {
     { ...fields, expectedVersion: domainDraft?.version }, 'Stock item saved.', 'inventory');
 });
 
+function currencyToCents(value) {
+  const text = String(value || '0').trim();
+  if (!/^\d{1,9}(?:\.\d{1,2})?$/.test(text)) throw Error('Enter a cost with up to two decimal places.');
+  const [whole, fraction = ''] = text.split('.');
+  return Number(whole) * 100 + Number(fraction.padEnd(2, '0'));
+}
+function optionalInteger(value) { return value === '' ? null : Number(value); }
+
+app.addEventListener('submit', event => {
+  const form = event.target;
+  if (!['maintenance-form','maintenance-complete-form','vehicle-form','vehicle-service-form'].includes(form.id)) return;
+  event.preventDefault();
+  try {
+    const source = Object.fromEntries(new FormData(form));
+    if (form.id === 'maintenance-form') {
+      const id = form.dataset.recordId;
+      const fields = { ...source, intervalCount: Number(source.intervalCount), estimatedCostCents: currencyToCents(source.estimatedCost), expectedVersion: id ? Number(form.dataset.version) : undefined };
+      delete fields.estimatedCost;
+      void saveDomain(id ? `/api/maintenance/${encodeURIComponent(id)}` : '/api/maintenance', id ? 'PUT' : 'POST', fields, 'Maintenance schedule saved.', 'maintenance');
+    } else if (form.id === 'maintenance-complete-form') {
+      const id = form.dataset.recordId;
+      void saveDomain(`/api/maintenance/${encodeURIComponent(id)}/complete`, 'POST', {
+        expectedVersion: Number(form.dataset.version), performedOn: source.performedOn,
+        costCents: currencyToCents(source.cost), notes: source.notes,
+      }, 'Maintenance completion saved.', 'maintenance');
+    } else if (form.id === 'vehicle-form') {
+      const id = form.dataset.recordId;
+      const fields = { ...source, year: Number(source.year), odometer: Number(source.odometer), expectedVersion: id ? Number(form.dataset.version) : undefined };
+      void saveDomain(id ? `/api/vehicles/${encodeURIComponent(id)}` : '/api/vehicles', id ? 'PUT' : 'POST', fields, 'Vehicle profile saved.', 'vehicles');
+    } else {
+      void saveDomain('/api/vehicles/services', 'POST', {
+        vehicleId: form.dataset.vehicleId, serviceType: source.serviceType, performedOn: source.performedOn,
+        odometer: Number(source.odometer), dueOn: source.dueOn || null,
+        dueOdometer: optionalInteger(source.dueOdometer), intervalMonths: optionalInteger(source.intervalMonths),
+        intervalMiles: optionalInteger(source.intervalMiles), costCents: currencyToCents(source.cost), notes: source.notes,
+      }, 'Vehicle service saved.', 'vehicles');
+    }
+  } catch (err) {
+    showFormError(err.message || 'Check the form and try again.');
+  }
+});
+
 app.addEventListener('click', event => {
   const actions = event.target.closest('button')?.dataset;
   if (!actions || !me) return;
@@ -915,7 +982,56 @@ async function submitItem(form) {
   }
 }
 app.addEventListener('click',async e=>{const nav=e.target.closest('[data-nav]'),act=e.target.closest('[data-action]'),check=e.target.closest('[data-complete]'),newKind=e.target.closest('[data-new-kind]');if(nav){if(screen==='wall'&&document.fullscreenElement)void document.exitFullscreen?.().catch(()=>{});quickOpen=false;screen=nav.dataset.nav;message='';error='';if(screen==='more'||screen==='settings')render();await loadData();return}if(newKind?.dataset.newKind==='meal'){void openMeal();return}if(['chore','reward','recipe','inventory','announcement'].includes(newKind?.dataset.newKind)){openDomainForm(newKind.dataset.newKind);return}if(newKind?.dataset.newKind==='event'){quickOpen=false;openCalendarForm();return}if(newKind?.dataset.newKind==='shopping'){quickOpen=false;screen='shopping';await loadData();return}if(newKind){quickOpen=false;screen=`new:${newKind.dataset.newKind}`;message='';render();return}if(check){await complete(check.dataset.complete);return}if(act?.dataset.action==='add'){quickOpen=!quickOpen;render();return}if(act?.dataset.action==='logout'){const leavingId=me.id;localStorage.setItem(SIGNED_OUT,'1');try{await api('/api/logout',{method:'POST',body:JSON.stringify({csrf})})}catch{}if(live){live.close();live=null}try{await clearQueued(leavingId)}catch{}clearLegacyCaches();resetPrivateViews();me=null;csrf='';members=[];items=[];offline=false;authState='signed-out';screen='today';render();return}if(act?.dataset.action==='theme'){const cur=document.documentElement.dataset.theme||'system',next=cur==='system'?'light':cur==='light'?'dark':'system';applyTheme(next);return}});
-app.addEventListener('submit',async e=>{if(e.target.id==='item-form'){e.preventDefault();await submitItem(e.target)}if(e.target.id==='member-form'){e.preventDefault();try{const payload=Object.fromEntries(new FormData(e.target));payload.csrf=csrf;const r=await api('/api/members',{method:'POST',body:JSON.stringify(payload)}),d=await r.json();if(!r.ok)throw Error(d.error);message='Member added.';await loadData()}catch(err){error=err.message;render()}}if(e.target.id==='password-form'){e.preventDefault();try{const payload=Object.fromEntries(new FormData(e.target));payload.csrf=csrf;const r=await api('/api/password',{method:'POST',body:JSON.stringify(payload)}),d=await r.json();if(!r.ok)throw Error(d.error);message='Password updated. Other sessions were signed out.';await loadData()}catch(err){error=err.message;render()}}});
+
+app.addEventListener('click', event => {
+  const action = event.target.closest('button')?.dataset;
+  if (!action || !me) return;
+  if (action.propertyOpen === 'maintenance') return openDomainForm('maintenance');
+  if (action.propertyOpen === 'vehicle') return openDomainForm('vehicle');
+  if (action.maintTemplate) return openDomainForm('maintenance', { templateTitle: action.maintTemplate });
+  if (screen === 'maintenance' || screen === 'maintenance-form' || screen === 'maintenance-complete-form') {
+    if (action.maintEdit) {
+      const item = propertyCareData?.schedules.find(row => row.id === action.maintEdit);
+      if (item) openDomainForm('maintenance', item);
+    }
+    if (action.maintComplete) {
+      const item = propertyCareData?.schedules.find(row => row.id === action.maintComplete);
+      if (item) openDomainForm('maintenance-complete', item);
+    }
+    if (action.maintArchive) {
+      const item = propertyCareData?.schedules.find(row => row.id === action.maintArchive);
+      if (item && window.confirm(`Archive ${item.title}? Its completion history will be kept.`))
+        void saveDomain(`/api/maintenance/${encodeURIComponent(item.id)}`, 'DELETE', { expectedVersion: item.version }, 'Maintenance schedule archived.', 'maintenance');
+    }
+  }
+  if (screen === 'vehicles' || screen === 'vehicle-form' || screen === 'vehicle-service-form') {
+    if (action.vehicleEdit) {
+      const item = propertyCareData?.vehicles.find(row => row.id === action.vehicleEdit);
+      if (item) openDomainForm('vehicle', item);
+    }
+    if (action.serviceNew) {
+      const vehicle = propertyCareData?.vehicles.find(row => row.id === action.serviceNew);
+      if (vehicle) openDomainForm('vehicle-service', { vehicle });
+    }
+  }
+});
+app.addEventListener('submit',async e=>{const form=e.target;if(form.id==='item-form'){e.preventDefault();await submitItem(form);return}if(form.id==='member-form'){e.preventDefault();try{const payload=Object.fromEntries(new FormData(form));payload.csrf=csrf;const r=await api('/api/members',{method:'POST',body:JSON.stringify(payload)}),d=await r.json();if(!r.ok)throw Error(d.error);message='Member added.';await loadData()}catch(err){error=err.message;render()}return}if(form.dataset.profileId){e.preventDefault();document.activeElement?.blur();try{const payload={...Object.fromEntries(new FormData(form)),targetId:form.dataset.profileId,csrf};const r=await api('/api/members/profile',{method:'PUT',body:JSON.stringify(payload)}),d=await r.json();if(!r.ok)throw Error(d.error);if(d.id===me.id)Object.assign(me,{displayName:d.displayName,color:d.color,avatar:d.avatar});message='Profile saved.';await loadData()}catch(err){error=err.message;render()}return}if(form.dataset.memberReset){e.preventDefault();document.activeElement?.blur();try{const payload={...Object.fromEntries(new FormData(form)),targetId:form.dataset.memberReset,csrf};const r=await api('/api/members/password/reset',{method:'POST',body:JSON.stringify(payload)}),d=await r.json();if(!r.ok)throw Error(d.error);message='Password reset. Active sessions were revoked.';await loadData()}catch(err){error=err.message;render()}return}if(form.id==='password-form'){e.preventDefault();document.activeElement?.blur();try{const payload=Object.fromEntries(new FormData(form));payload.csrf=csrf;const r=await api('/api/password',{method:'POST',body:JSON.stringify(payload)}),d=await r.json();if(!r.ok)throw Error(d.error);message='Password updated. Other sessions were signed out.';await loadData()}catch(err){error=err.message;render()}}});
+app.addEventListener('click',async e=>{const status=e.target.closest('[data-account-status]'),revoke=e.target.closest('[data-session-revoke]');if(status){const disabled=status.dataset.active==='true';if(disabled&&!window.confirm('Disable this account and sign out its active devices?'))return;try{const r=await api('/api/members/status',{method:'POST',body:JSON.stringify({csrf,targetId:status.dataset.accountStatus,disabled})}),d=await r.json();if(!r.ok)throw Error(d.error);message=disabled?'Account disabled.':'Account reactivated.';await loadData()}catch(err){error=err.message;render()}return}if(revoke){if(!window.confirm('Revoke this device session?'))return;try{const r=await api('/api/sessions/revoke',{method:'POST',body:JSON.stringify({csrf,deviceId:revoke.dataset.sessionRevoke})}),d=await r.json();if(!r.ok)throw Error(d.error);if(d.current){await expireLocalSession();return}message='Device session revoked.';await loadData()}catch(err){error=err.message;render()}}});
+app.addEventListener('click', async event => {
+  const control = event.target.closest('[data-member-sessions]');
+  if (!control) return;
+  try {
+    const response = await api('/api/sessions/list', { method: 'POST',
+      body: JSON.stringify({ csrf, targetId: control.dataset.memberSessions }) });
+    const data = await response.json();
+    if (!response.ok) throw Error(data.error || 'Sessions could not be loaded.');
+    memberSessionsData = { ...memberSessionsData, [control.dataset.memberSessions]: data.sessions };
+    render();
+  } catch (err) {
+    error = err.message || 'Sessions could not be loaded.';
+    render();
+  }
+});
 function applyTheme(theme){document.documentElement.dataset.theme=theme;localStorage.setItem('hs-theme',theme);document.documentElement.style.colorScheme=theme==='system'?'light dark':theme}const savedTheme=localStorage.getItem('hs-theme')||'system';applyTheme(savedTheme);app.addEventListener('change',e=>{if(e.target.id==='theme-select')applyTheme(e.target.value)});
 let sessionCheck=null;
 async function revalidateSession(){if(sessionCheck)return sessionCheck;sessionCheck=(async()=>{try{const response=await api('/api/me');if(response.status===401){await expireLocalSession();return}if(!response.ok)return;const data=await response.json();if(!data.user||data.user.id!==me?.id){await expireLocalSession();return}csrf=data.csrf;offline=false;authState='authenticated'}catch{if(me){offline=true;authState='offline-authorized'}if(!formHasDraft())render()}})();try{await sessionCheck}finally{sessionCheck=null}}

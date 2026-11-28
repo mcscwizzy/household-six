@@ -28,7 +28,9 @@ for (const engine of [chromium, webkit]) {
   await page.goto(baseURL);
   await page.getByLabel('Username').fill(username);
   await page.getByLabel('Password').fill(password);
+  const ownerLoginResponse = page.waitForResponse(response => response.url().endsWith('/api/login'));
   await page.getByRole('button', { name: 'Sign in' }).click();
+  assert.equal((await ownerLoginResponse).status(), 200, `${engine.name()} owner login should succeed`);
   await page.locator('.shell').waitFor();
 
   await page.getByRole('button', { name: /Add/ }).first().click();
@@ -114,6 +116,77 @@ for (const engine of [chromium, webkit]) {
     username: memberUsername, password: memberPassword,
   } });
   assert.equal(member.status(), 201);
+  const memberRecord = await member.json();
+  const childName = `Child ${engine.name()}`;
+  const memberResetPassword = `Reset-${crypto.randomUUID()}-Safe-Passphrase`;
+  await page.locator('button[data-nav=more]:visible').click();
+  await page.locator('button[data-nav=members]:visible').click();
+  const memberCard = page.locator('article.card').filter({ hasText: childName }).last();
+  await memberCard.getByText('Edit profile', { exact: true }).click();
+  const profileForm = memberCard.locator('form[data-profile-id]');
+  await profileForm.locator('select[name=color]').selectOption('#54768C');
+  await profileForm.locator('select[name=avatar]').selectOption('fox');
+  await profileForm.getByRole('button', { name: 'Save profile' }).click();
+  await page.getByText('Profile saved.').waitFor();
+  assert.equal((await page.request.get(`${baseURL}/api/members`).then(r => r.json()))
+    .members.find(record => record.id === memberRecord.id).avatar_key, 'fox');
+
+  page.once('dialog', dialog => dialog.accept());
+  await memberCard.getByRole('button', { name: 'Disable account' }).click();
+  await memberCard.getByText('Disabled', { exact: true }).waitFor();
+  const disabledContext = await browser.newContext();
+  const disabledLogin = await disabledContext.request.post(`${baseURL}/api/login`, {
+    data: { username: memberUsername, password: memberPassword },
+  });
+  assert.equal(disabledLogin.status(), 401, 'disabled members cannot start a session');
+  await disabledContext.close();
+  await memberCard.getByRole('button', { name: 'Reactivate account' }).click();
+  await memberCard.locator('details').nth(1).locator('summary').click();
+  await memberCard.locator('form[data-member-reset] input[name=newPassword]').waitFor({ state: 'visible' });
+  await memberCard.locator('form[data-member-reset]').locator('input[name=newPassword]').fill(memberResetPassword);
+  await memberCard.locator('form[data-member-reset]').getByRole('button', { name: /Reset password/ }).click();
+  await page.getByText('Password reset. Active sessions were revoked.').waitFor();
+  const oldPasswordContext = await browser.newContext();
+  const oldPasswordLogin = await oldPasswordContext.request.post(`${baseURL}/api/login`, {
+    data: { username: memberUsername, password: memberPassword },
+  });
+  assert.equal(oldPasswordLogin.status(), 401, 'password reset rejects the old password');
+  await oldPasswordContext.close();
+
+  const childSessionContext = await browser.newContext();
+  const childLogin = await childSessionContext.request.post(`${baseURL}/api/login`, {
+    data: { username: memberUsername, password: memberResetPassword },
+  });
+  assert.equal(childLogin.status(), 200);
+  const childSession = (await childSessionContext.request.get(`${baseURL}/api/sessions`).then(r => r.json())).sessions[0];
+  assert.equal(childSession.current, true);
+  await memberCard.locator('details').nth(2).locator('summary').click();
+  await memberCard.getByRole('button', { name: 'Load active sessions' }).click();
+  await memberCard.getByText('Household device', { exact: true }).waitFor();
+  const revokeResponse = page.waitForResponse(response => response.url().endsWith('/api/sessions/revoke'));
+  page.once('dialog', dialog => dialog.accept());
+  await memberCard.locator(`button[data-session-revoke="${childSession.id}"]`).click();
+  assert.equal((await revokeResponse).status(), 200, 'an owner can revoke a same-household member session');
+  assert.equal((await childSessionContext.request.get(`${baseURL}/api/me`).then(r => r.json())).user, null,
+    'revoked sessions stop authenticating immediately');
+  await childSessionContext.close();
+
+  const secondOwnerContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const secondOwnerPage = await secondOwnerContext.newPage();
+  await secondOwnerPage.goto(baseURL);
+  await secondOwnerPage.getByLabel('Username').fill(username);
+  await secondOwnerPage.getByLabel('Password').fill(password);
+  await secondOwnerPage.getByRole('button', { name: 'Sign in' }).click();
+  await secondOwnerPage.locator('.shell').waitFor();
+  await secondOwnerPage.locator('button[data-nav=more]:visible').click();
+  await secondOwnerPage.locator('button[data-nav=settings]:visible').click();
+  await secondOwnerPage.getByText('This device', { exact: false }).waitFor();
+  secondOwnerPage.once('dialog', dialog => dialog.accept());
+  await secondOwnerPage.locator('article.card').filter({ hasText: 'This device' })
+    .getByRole('button', { name: 'Revoke' }).click();
+  await secondOwnerPage.getByLabel('Username').waitFor();
+  await secondOwnerContext.close();
+
   await page.locator('.nav-item[data-nav=tasks]:visible').click();
   await page.getByRole('button', { name: 'New chore' }).click();
   const choreName = `Pack schoolbag ${engine.name()}`;
@@ -129,7 +202,7 @@ for (const engine of [chromium, webkit]) {
   const childPage = await child.newPage();
   await childPage.goto(baseURL);
   await childPage.getByLabel('Username').fill(memberUsername);
-  await childPage.getByLabel('Password').fill(memberPassword);
+  await childPage.getByLabel('Password').fill(memberResetPassword);
   await childPage.getByRole('button', { name: 'Sign in' }).click();
   await childPage.locator('.nav-item[data-nav=tasks]:visible').click();
   await childPage.getByRole('button', { name: `Check off ${choreName}` }).click();
@@ -250,6 +323,73 @@ for (const engine of [chromium, webkit]) {
   await page.getByText(`Weekly allowance ${engine.name()}`, { exact: true }).waitFor();
   await page.screenshot({ path: `${artifactDir}/${engine.name()}-allowance.png`, fullPage: true });
   screenshots.push(`${engine.name()}-allowance.png`);
+
+  const localToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(new Date());
+  await page.locator('button[data-nav=more]:visible').click();
+  await page.locator('button[data-nav=maintenance]:visible').click();
+  const scheduleCountBeforeTemplate = await page.locator('.main .list > article.card.domain-row').count();
+  await page.getByText('Suggested maintenance templates', { exact: true }).click();
+  await page.getByRole('button', { name: 'HVAC filter', exact: true }).click();
+  await page.locator('#maintenance-form').getByRole('button', { name: 'Cancel' }).click();
+  await page.waitForFunction(count => document.querySelectorAll('.main .list > article.card.domain-row').length === count,
+    scheduleCountBeforeTemplate);
+  await page.getByRole('button', { name: 'Add schedule' }).click();
+  const maintenanceTitle = `HVAC filter ${engine.name()}`;
+  await page.getByLabel('Task').fill(maintenanceTitle);
+  await page.getByLabel('Asset name').fill(`Upstairs furnace ${engine.name()}`);
+  await page.getByLabel('Category').selectOption('hvac');
+  await page.getByLabel('Due date').fill(localToday);
+  await page.getByLabel('Frequency').selectOption('monthly');
+  await page.getByLabel('Repeat interval').fill('1');
+  await page.getByLabel('Assign to').selectOption({ label: childName });
+  await page.getByLabel('Estimated cost ($)').fill('18.00');
+  await page.getByRole('button', { name: 'Save schedule' }).click();
+  await page.getByText('Maintenance schedule saved.').waitFor();
+  await page.locator('.main .list > article.card.domain-row').filter({ hasText: maintenanceTitle })
+    .getByRole('button', { name: 'Mark complete' }).click();
+  await page.getByLabel('Actual cost ($)').fill('24.00');
+  await page.getByLabel('Notes').fill('Changed the filter.');
+  await page.getByRole('button', { name: 'Save completion' }).click();
+  await page.getByText('Maintenance completion saved.').waitFor();
+  for (const width of [320, 375, 390, 430, 768, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      `${engine.name()} maintenance overflow at ${width}px`);
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: `${artifactDir}/${engine.name()}-maintenance.png`, fullPage: true });
+  screenshots.push(`${engine.name()}-maintenance.png`);
+
+  await page.locator('button[data-nav=more]:visible').click();
+  await page.locator('button[data-nav=vehicles]:visible').click();
+  await page.getByRole('button', { name: 'Add vehicle' }).click();
+  await page.getByLabel('Make').fill('Toyota');
+  await page.getByLabel('Model').fill('Prius');
+  await page.getByLabel('Year').fill('2022');
+  await page.getByLabel('Fuel type').selectOption('hybrid');
+  await page.getByLabel('Nickname').fill(`Blue car ${engine.name()}`);
+  await page.getByLabel('Current odometer (miles)').fill('28000');
+  await page.getByLabel('Registration due').fill(localToday);
+  await page.getByRole('button', { name: 'Save vehicle' }).click();
+  const vehicleCard = page.locator('.main .list > article.card.domain-row').filter({ hasText: `Blue car ${engine.name()}` });
+  await vehicleCard.getByRole('button', { name: 'Record service' }).click();
+  await page.getByLabel('Service type').fill('Tire rotation');
+  await page.getByLabel('Date performed').fill(localToday);
+  await page.getByLabel('Odometer (miles)').fill('28000');
+  await page.getByLabel('Next due odometer').fill('33000');
+  await page.getByLabel('Repeat every (miles)').fill('5000');
+  await page.getByLabel('Cost ($)').fill('75.00');
+  await page.getByRole('button', { name: 'Save service' }).click();
+  await vehicleCard.getByText('Service history (1)', { exact: true }).click();
+  await vehicleCard.getByText('Tire rotation', { exact: true }).waitFor();
+  for (const width of [320, 375, 390, 430, 768, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      `${engine.name()} vehicles overflow at ${width}px`);
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: `${artifactDir}/${engine.name()}-vehicles.png`, fullPage: true });
+  screenshots.push(`${engine.name()}-vehicles.png`);
 
   await page.locator('button[data-nav=more]:visible').click();
   await page.locator('button[data-nav=shopping]:visible').click();
